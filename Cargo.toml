@@ -3,17 +3,13 @@ name = "gcm-sst"
 version = "0.1.0"
 edition = "2021"
 description = """
- TODO
+  TODO
 """
 license = "BSD-3-Clause"
 readme = "README.md"
 repository = "https://github.com/ericlagergren/gcm-sst"
 keywords = [ "gcm", "gcm-sst" ]
 categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
-include = [
-	"LICENSE",
-	"README.md",
-]
 
 [lints.rust]
 missing_docs = "warn"
