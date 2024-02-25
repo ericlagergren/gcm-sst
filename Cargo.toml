@@ -10,10 +10,6 @@ readme = "README.md"
 repository = "https://github.com/ericlagergren/gcm-sst"
 keywords = [ "gcm", "gcm-sst" ]
 categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
-include = [
-	"LICENSE",
-	"README.md",
-]
 
 [features]
 default = []
