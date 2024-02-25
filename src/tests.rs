@@ -7,11 +7,11 @@ use typenum::{U10, U4, U8};
 use crate::{GcmSst, Key, Nonce, Tag};
 
 type AesGcm128Sst4 = GcmSst<Aes128, U4>;
-type AesGcm128Sst8 = GcmSst<Aes128, U8>;
-type AesGcm128Sst10 = GcmSst<Aes128, U10>;
-type AesGcm256Sst4 = GcmSst<Aes256, U4>;
-type AesGcm256Sst8 = GcmSst<Aes256, U8>;
-type AesGcm256Sst10 = GcmSst<Aes256, U10>;
+// type AesGcm128Sst8 = GcmSst<Aes128, U8>;
+// type AesGcm128Sst10 = GcmSst<Aes128, U10>;
+// type AesGcm256Sst4 = GcmSst<Aes256, U4>;
+// type AesGcm256Sst8 = GcmSst<Aes256, U8>;
+// type AesGcm256Sst10 = GcmSst<Aes256, U10>;
 
 #[derive(Deserialize)]
 struct TestCases {
@@ -43,13 +43,18 @@ fn test_aes_gcm_128_vectors() {
     let key = Key::<Aes128>::from_slice(&tests.key);
     let nonce = Nonce::from_slice(&tests.nonce);
     for test in tests.cases {
-        let mut got_pt = vec![0u8; test.plaintext.len()];
+        let mut got_ct = vec![0u8; test.ciphertext.len()];
 
         let aead = AesGcm128Sst4::new(&key);
         let got_tag = aead
-            .seal(&mut got_pt, &nonce, &test.ciphertext, &test.aad)
+            .seal(&mut got_ct, &nonce, &test.plaintext, &test.aad)
             .expect("should be able to encrypt");
-        assert_eq!(&got_tag[..], &test.tag[..], "{}", test.name);
-        assert_eq!(&got_pt, &test.plaintext, "{}", test.name)
+        assert_eq!(&got_tag[..], &test.tag[..], "case #{}", test.name);
+        assert_eq!(&got_ct, &test.ciphertext, "case #{}", test.name);
+
+        let mut got_pt = vec![0u8; test.plaintext.len()];
+        aead.open(&mut got_pt, &nonce, &test.ciphertext, &got_tag, &test.aad)
+            .expect("should be able to decrypt");
+        assert_eq!(&got_pt, &test.plaintext, "case #{}", test.name);
     }
 }

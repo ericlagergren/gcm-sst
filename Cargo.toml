@@ -48,6 +48,7 @@ inout = { version = "0.1" }
 polyhash = { path = "/Users/eric/git/polyval-rs" }
 subtle = { version = "2.5" }
 typenum = { version = "1" }
+hex = { version = "0.4", features = ["serde"] } # TODO
 
 [dev-dependencies]
 aes = { version = "0.8" }

@@ -126,14 +126,13 @@ where
             let full_tag: Block = {
                 // Let X = POLYVAL(H, S[0], S[1], ..., S[m + n - 1])
                 let x = {
-                    let mut poly =
-                        Polyval::new(&PolyKey::new(&h.into()).assume("`h` is non-zero")?);
+                    let mut poly = Polyval::new(&PolyKey::new_known_non_zero(&h.into()));
                     poly.update_padded(ad); // zeropad(A)
                     poly.update_padded(ct); // zeropad(ct)
                     poly.tag().into()
                 };
 
-                let s_m_n = {
+                let l = {
                     let mut block = Block::default();
                     let (ct_len, ad_len) = block.split_at_mut(8);
                     ct_len.copy_from_slice(&(ct.len() as u64 * 8).to_le_bytes()); // LE64(len(ct))
@@ -142,9 +141,8 @@ where
                 };
 
                 let poly = {
-                    let mut poly =
-                        Polyval::new(&PolyKey::new(&q.into()).assume("`q` is non-zero")?);
-                    poly.update(&xor(&x, &s_m_n))
+                    let mut poly = Polyval::new(&PolyKey::new_known_non_zero(&q.into()));
+                    poly.update(&xor(&x, &l))
                         .assume("`x ^ s[m+n]` is exactly `BLOCK_SIZE` bytes long")?;
                     poly.tag().into()
                 };
