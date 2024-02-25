@@ -1,0 +1,24 @@
+{
+    "key": "000102030405060708090a0b0c0d0e0f",
+    "nonce": "303132333435363738393a3b",
+    "cases": [
+        {
+            "name": "1a",
+            "aad": "",
+            "plaintext": "",
+            "encode_len": "00000000000000000000000000000000",
+            "full_tag": "9b1d49ea42b00aecb0bceb8dd0efc2b9",
+            "tag": "9b1d49ea",
+            "ciphertext": ""
+        },
+        {
+            "name": "1b",
+            "aad": "4041424344",
+            "plaintext": "",
+            "encode_len": "00000000000000002800000000000000",
+            "full_tag": "7ff3cba4d5f308a5704e2fd5f23ae8f9",
+            "tag": "7ff3cba4",
+            "ciphertext": ""
+        }
+    ]
+}
