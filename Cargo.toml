@@ -1,0 +1,61 @@
+[package]
+name = "gcm-sst"
+version = "0.1.0"
+edition = "2021"
+description = """
+ TODO
+"""
+license = "BSD-3-Clause"
+readme = "README.md"
+repository = "https://github.com/ericlagergren/gcm-sst"
+keywords = [ "gcm", "gcm-sst" ]
+categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
+include = [
+	"LICENSE",
+	"README.md",
+]
+
+[lints.rust]
+missing_docs = "warn"
+rust_2018_idioms = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+cast_lossless = "warn"
+cast_possible_wrap = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+panic = "warn"
+unwrap_used = "warn"
+wildcard_imports = "warn"
+
+[features]
+default = []
+
+# Enable allocations.
+alloc = []
+
+# Enable libstd.
+std = []
+
+[dependencies]
+aead = { version = "0.5" }
+cfg-if = { version = "1" }
+cipher = { version = "0.4" }
+ctr = { version = "0.9" }
+inout = { version = "0.1" }
+polyhash = { path = "/Users/eric/git/polyval-rs" }
+subtle = { version = "2.5" }
+typenum = { version = "1" }
+hex = { version = "0.4", features = ["serde"] } # TODO
+
+[dev-dependencies]
+aes = { version = "0.8" }
+hex = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
