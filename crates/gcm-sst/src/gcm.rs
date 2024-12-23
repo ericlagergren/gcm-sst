@@ -1,86 +1,86 @@
-use core::{marker::PhantomData, option::Option, result::Result};
+use core::{fmt, marker::PhantomData};
 
-use aead::{
-    generic_array::{ArrayLength, GenericArray},
-    AeadCore, Error,
-};
-pub use aead::{Key, Tag};
 use cfg_if::cfg_if;
-use cipher::{
-    BlockCipher, BlockEncrypt, BlockEncryptMut, BlockSizeUser, InnerIvInit, KeyInit,
-    StreamCipherCore,
-};
-use ctr::CtrCore;
+pub use crypto_common::generic_array::ArrayLength;
+use crypto_common::generic_array::GenericArray;
 use inout::InOutBuf;
 use polyhash::{Key as PolyKey, Polyval};
 use subtle::ConstantTimeEq;
-use typenum::{IsGreaterOrEqual, IsLessOrEqual, U12, U16, U4};
+use typenum::{IsGreaterOrEqual, IsLessOrEqual, Unsigned, U12, U16, U4};
 
-type Block = GenericArray<u8, U16>;
+/// An error returned by [`GcmSst`].
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Error;
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AES-GCM-SST error")
+    }
+}
+
+/// A keystream generator.
+pub trait Generator {
+    /// Uses `nonce` to generate a new keystream.
+    fn init(&self, nonce: &Nonce) -> impl Keystream;
+}
+
+/// A stream of pseudorandom bytes.
+pub trait Keystream {
+    /// The keystream block.
+    type Block: Into<[u8; 16]>;
+
+    /// Returns the next keystream block.
+    fn next(&mut self) -> Self::Block;
+
+    /// Applies the remainder of the keystream to `buf`.
+    fn apply(self, buf: InOutBuf<'_, '_, u8>);
+}
+
+/// A 128-bit chunk.
+type Chunk = GenericArray<u8, U16>;
+
+/// TODO
+pub const NONCE_SIZE: usize = <NonceSize as Unsigned>::USIZE;
+
+/// TODO
+pub type NonceSize = U12;
 
 /// The nonce used by GCM-SST.
-pub type Nonce = GenericArray<u8, U12>;
+pub type Nonce = GenericArray<u8, NonceSize>;
+
+/// An authentication tag.
+pub type Tag<N> = GenericArray<u8, N>;
 
 /// A cipher using GCM-SST mode.
 #[derive(Clone)]
-pub struct GcmSst<A, T> {
-    cipher: A,
+pub struct GcmSst<G, T> {
+    generator: G,
     _tag: PhantomData<T>,
 }
 
-impl<A, T> GcmSst<A, T>
-where
-    T: ArrayLength<u8> + IsGreaterOrEqual<U4> + IsLessOrEqual<U16>,
-{
-    /// The maximum size in octets of a plaintext.
-    pub const P_MAX: u64 = (1 << 36) - 48;
-    /// The maximum size in octets of a ciphertext.
-    pub const C_MAX: u64 = Self::P_MAX + Self::TAG_SIZE as u64;
-    /// The maximum size in octets of the additional data.
-    pub const A_MAX: u64 = 1 << 36;
-    /// The size in octets of a nonce.
-    pub const NONCE_SIZE: usize = 12;
-    /// The size in octets of a tag.
-    pub const TAG_SIZE: usize = T::USIZE;
-}
-
-impl<A, T> AeadCore for GcmSst<A, T>
-where
-    T: ArrayLength<u8> + IsGreaterOrEqual<U4> + IsLessOrEqual<U16>,
-{
-    type NonceSize = U12;
-    type TagSize = T;
-    type CiphertextOverhead = T;
-}
-
-impl<A, T> GcmSst<A, T>
-where
-    A: BlockSizeUser<BlockSize = U16> + BlockEncrypt + KeyInit,
-{
+impl<G, T> GcmSst<G, T> {
     /// Creates a new instance of GCM-SST.
-    pub fn new(key: &Key<A>) -> Self {
+    pub const fn new(generator: G) -> Self {
         Self {
-            cipher: A::new(key),
+            generator,
             _tag: PhantomData,
         }
     }
 }
 
-impl<A, T> GcmSst<A, T>
+impl<G, T> GcmSst<G, T>
 where
-    A: BlockCipher + BlockSizeUser<BlockSize = U16> + BlockEncrypt,
+    G: Generator,
     T: ArrayLength<u8> + IsGreaterOrEqual<U4> + IsLessOrEqual<U16>,
 {
+    const TAG_SIZE: usize = T::USIZE;
+
     /// Encrypts and authenticates `plaintext`, authenticates
     /// `additional_data`, and writes the result to `dst`.
     ///
     /// # Requirements
     ///
     /// - `dst` must be at least as long as `plaintext`.
-    /// - `plaintext` must be at most [`P_MAX`][Self::P_MAX]
-    /// octets long.
-    /// - `additional_data` must be at most
-    /// [`A_MAX`][Self::A_MAX] octets long.
     #[inline]
     pub fn seal(
         &self,
@@ -88,68 +88,56 @@ where
         nonce: &Nonce,
         plaintext: &[u8],
         additional_data: &[u8],
-    ) -> aead::Result<Tag<Self>> {
+    ) -> Result<Tag<T>, Error> {
         self.encrypt(dst, nonce, plaintext, additional_data)
     }
 
-    fn encrypt(
-        &self,
-        ct: &mut [u8],
-        nonce: &Nonce,
-        pt: &[u8],
-        ad: &[u8],
-    ) -> aead::Result<Tag<Self>> {
-        if pt.len() as u64 > Self::P_MAX || ad.len() as u64 > Self::A_MAX {
-            return Err(Error);
-        }
+    fn encrypt(&self, ct: &mut [u8], nonce: &Nonce, pt: &[u8], ad: &[u8]) -> Result<Tag<T>, Error> {
         let ct = ct.get_mut(..pt.len()).ok_or(Error)?;
 
-        let mut ks = Ctr32BE::inner_iv_init(&self.cipher, &{
-            let mut block = Block::default();
-            block[..12].copy_from_slice(nonce);
-            block
-        });
+        // Initiate keystream generator with K and N
+        let mut ks = self.generator.init(nonce);
 
         // Let H = Z[0], Q = Z[1], M = Z[2]
-        let h = ks.next_keystream_block();
-        let q = ks.next_keystream_block();
-        let m = ks.next_keystream_block();
+        let h = ks.next();
+        let q = ks.next();
+        let m = ks.next();
 
-        // Let ct = P XOR truncate(Z[3:n + 2], len(P))
-        ks.apply_keystream_partial(InOutBuf::new(pt, ct).assume("`ct.len()` == `pt.len()`")?);
+        // Let ct = P ⊕ truncate(Z[3:n + 2], len(P))
+        ks.apply(InOutBuf::new(pt, ct).assume("`ct.len()` == `pt.len()`")?);
 
         // Let tag = truncate(full_tag, tag_length)
         let tag = {
-            // Let S = zeropad(A) || zeropad(ct) || LE64(len(ct)) || LE64(len(A))
-            //
-            // Let full_tag = POLYVAL(Q, X XOR S[m + n]) XOR M
-            let full_tag: Block = {
-                // Let X = POLYVAL(H, S[0], S[1], ..., S[m + n - 1])
+            // Let full_tag = POLYVAL(Q, X ⊕ L) ⊕ M
+            let full_tag: Chunk = {
+                // Let S = zeropad(A) || zeropad(ct)
+                // Let X = POLYVAL(H, S[0], S[1], ...)
                 let x = {
-                    let mut poly = Polyval::new(&PolyKey::new_known_non_zero(&h.into()));
+                    let mut poly = Polyval::new(&PolyKey::new_unchecked(&h.into()));
                     poly.update_padded(ad); // zeropad(A)
                     poly.update_padded(ct); // zeropad(ct)
-                    poly.tag().into()
+                    u128::from_le_bytes(poly.tag().into())
                 };
 
+                // Let L = LE64(len(ct)) || LE64(len(A))
                 let l = {
-                    let mut block = Block::default();
-                    let (ct_len, ad_len) = block.split_at_mut(8);
+                    let mut chunk = [0; 16];
+                    let (ct_len, ad_len) = chunk.split_at_mut(8);
                     ct_len.copy_from_slice(&(ct.len() as u64 * 8).to_le_bytes()); // LE64(len(ct))
                     ad_len.copy_from_slice(&(ad.len() as u64 * 8).to_le_bytes()); // LE64(len(A))
-                    block.into()
+                    u128::from_le_bytes(chunk.into())
                 };
 
                 let poly = {
-                    let mut poly = Polyval::new(&PolyKey::new_known_non_zero(&q.into()));
-                    poly.update(&xor(&x, &l))
-                        .assume("`x ^ s[m+n]` is exactly `BLOCK_SIZE` bytes long")?;
+                    let mut poly = Polyval::new(&PolyKey::new_unchecked(&q.into()));
+                    poly.update_block(&(x ^ l).to_le_bytes());
                     poly.tag().into()
                 };
                 xor(&poly, &m.into())
             };
 
-            let mut tag = Tag::<Self>::default();
+            // Let tag = truncate(full_tag, tag_length)
+            let mut tag = Tag::default();
             tag.copy_from_slice(&full_tag[..Self::TAG_SIZE]);
             tag
         };
@@ -174,9 +162,9 @@ where
         dst: &mut [u8],
         nonce: &Nonce,
         ciphertext: &[u8],
-        tag: &Tag<Self>,
+        tag: &Tag<T>,
         additional_data: &[u8],
-    ) -> aead::Result<()> {
+    ) -> Result<(), Error> {
         self.decrypt(dst, nonce, ciphertext, tag, additional_data)
     }
 
@@ -185,29 +173,25 @@ where
         pt: &mut [u8],
         nonce: &Nonce,
         ct: &[u8],
-        tag: &Tag<Self>,
+        tag: &Tag<T>,
         ad: &[u8],
-    ) -> aead::Result<()> {
-        if ct.len() as u64 > Self::C_MAX || ad.len() as u64 > Self::A_MAX {
-            return Err(Error);
-        }
+    ) -> Result<(), Error> {
+        // if ct.len() as u64 > Self::C_MAX || ad.len() as u64 > Self::A_MAX {
+        //     return Err(Error);
+        // }
         let pt = pt.get_mut(..ct.len()).ok_or(Error)?;
 
-        let mut ks = Ctr32BE::inner_iv_init(&self.cipher, &{
-            let mut block = Block::default();
-            block[..12].copy_from_slice(nonce);
-            block
-        });
+        let mut ks = self.generator.init(nonce);
 
         // Let H = Z[0], Q = Z[1], M = Z[2]
-        let h = ks.next_keystream_block();
-        let q = ks.next_keystream_block();
-        let m = ks.next_keystream_block();
+        let h = ks.next();
+        let q = ks.next();
+        let m = ks.next();
 
         // Let S = zeropad(A) || zeropad(ct) || LE64(len(ct)) || LE64(len(A))
         //
         // Let full_tag = POLYVAL(Q, X XOR S[m + n]) XOR M
-        let full_tag: Block = {
+        let full_tag: Chunk = {
             // Let X = POLYVAL(H, S[0], S[1], ..., S[m + n - 1])
             let x = {
                 let mut poly = Polyval::new(&PolyKey::new(&h.into()).assume("`h` is non-zero")?);
@@ -217,17 +201,16 @@ where
             };
 
             let s_m_n = {
-                let mut block = Block::default();
-                let (ct_len, ad_len) = block.split_at_mut(8);
+                let mut chunk = Chunk::default();
+                let (ct_len, ad_len) = chunk.split_at_mut(8);
                 ct_len.copy_from_slice(&(ct.len() as u64 * 8).to_le_bytes()); // LE64(len(ct))
                 ad_len.copy_from_slice(&(ad.len() as u64 * 8).to_le_bytes()); // LE64(len(A))
-                block.into()
+                chunk.into()
             };
 
             let poly = {
                 let mut poly = Polyval::new(&PolyKey::new(&q.into()).assume("`q` is non-zero")?);
-                poly.update(&xor(&x, &s_m_n))
-                    .assume("`x ^ s[m+n]` is exactly `BLOCK_SIZE` bytes long")?;
+                poly.update_block(&xor(&x, &s_m_n).into());
                 poly.tag().into()
             };
             xor(&poly, &m.into())
@@ -239,7 +222,7 @@ where
         }
 
         // Let P = ct XOR truncate(Z[3:n + 2], len(ct))
-        ks.apply_keystream_partial(InOutBuf::new(ct, pt).assume("`ct.len()` == `pt.len()`")?);
+        ks.apply(InOutBuf::new(ct, pt).assume("`ct.len()` == `pt.len()`")?);
 
         Ok(())
     }
@@ -247,30 +230,12 @@ where
 
 /// Returns x^y.
 #[inline(always)]
-fn xor(x: &[u8; 16], y: &[u8; 16]) -> Block {
-    let mut z = Block::default();
+fn xor(x: &[u8; 16], y: &[u8; 16]) -> Chunk {
+    let mut z = Chunk::default();
     for ((z, x), y) in z.iter_mut().zip(x).zip(y) {
         *z = x ^ y;
     }
     z
-}
-
-type Ctr32BE<A> = CtrCore<A, ctr::flavors::Ctr32BE>;
-
-trait StreamCipherCoreExt {
-    fn next_keystream_block(&mut self) -> Block;
-}
-
-impl<A> StreamCipherCoreExt for Ctr32BE<A>
-where
-    A: BlockEncryptMut + BlockCipher + BlockSizeUser<BlockSize = U16>,
-{
-    #[inline(always)]
-    fn next_keystream_block(&mut self) -> Block {
-        let mut block = Block::default();
-        self.write_keystream_block(&mut block);
-        block
-    }
 }
 
 impl From<Bug> for Error {
@@ -302,6 +267,7 @@ trait BugExt<T> {
 }
 
 impl<T> BugExt<T> for Option<T> {
+    #[inline]
     #[track_caller]
     fn assume(self, msg: &'static str) -> Result<T, Bug> {
         match self {
@@ -312,6 +278,7 @@ impl<T> BugExt<T> for Option<T> {
 }
 
 impl<T, E> BugExt<T> for Result<T, E> {
+    #[inline]
     #[track_caller]
     fn assume(self, msg: &'static str) -> Result<T, Bug> {
         match self {

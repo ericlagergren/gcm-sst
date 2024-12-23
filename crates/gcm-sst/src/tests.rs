@@ -1,17 +1,18 @@
 #![cfg(test)]
 
-use aes::{Aes128, Aes256};
+use aes::Aes128;
+use cipher::{KeyInit, KeyIvInit};
+use ctr::flavors;
 use serde::Deserialize;
-use typenum::{U10, U4, U8};
+use typenum::U4;
 
-use crate::{GcmSst, Key, Nonce, Tag};
+use crate::{rust_crypto::CtrGen, GcmSst, Nonce};
 
-type AesGcm128Sst4 = GcmSst<Aes128, U4>;
-// type AesGcm128Sst8 = GcmSst<Aes128, U8>;
-// type AesGcm128Sst10 = GcmSst<Aes128, U10>;
-// type AesGcm256Sst4 = GcmSst<Aes256, U4>;
-// type AesGcm256Sst8 = GcmSst<Aes256, U8>;
-// type AesGcm256Sst10 = GcmSst<Aes256, U10>;
+//type Ctr32BE<A> = CtrCore<A, ctr::flavors::Ctr32BE>;
+
+type Ctr32BE<A> = CtrGen<A, flavors::Ctr32BE>;
+type Aes128Ctr32BE = Ctr32BE<Aes128>;
+type AesGcm128Sst4 = GcmSst<Aes128Ctr32BE, U4>;
 
 #[derive(Deserialize)]
 struct TestCases {
@@ -40,12 +41,12 @@ fn test_aes_gcm_128_vectors() {
     const DATA: &str = include_str!("testdata/aes_gcm_128_sst.json");
 
     let tests: TestCases = serde_json::from_str(DATA).expect("should be able to parse test cases");
-    let key = Key::<Aes128>::from_slice(&tests.key);
+    let key = Aes128Ctr32BE::new_from_slices(&tests.key);
     let nonce = Nonce::from_slice(&tests.nonce);
     for test in tests.cases {
         let mut got_ct = vec![0u8; test.ciphertext.len()];
 
-        let aead = AesGcm128Sst4::new(&key);
+        let aead = AesGcm128Sst4::new(Aes128::new(&key));
         let got_tag = aead
             .seal(&mut got_ct, &nonce, &test.plaintext, &test.aad)
             .expect("should be able to encrypt");

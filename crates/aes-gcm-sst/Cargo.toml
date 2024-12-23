@@ -1,0 +1,38 @@
+[package]
+name = "aes-gcm-sst"
+version = "0.1.0"
+description = """
+ TODO
+"""
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+documentation = "https://docs.rs/aes-gcm-sst"
+keywords = [ "aes-gcm", "aes-gcm-sst" ]
+categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
+
+[features]
+default = []
+
+# Enable allocations.
+alloc = [
+	"gcm-sst/alloc",
+]
+
+# Enable `std`.
+std = [
+	"alloc",
+
+	"gcm-sst/alloc",
+]
+
+[dependencies]
+aes = { version = "0.8", default-features = false }
+gcm-sst = { version = "0.1.0", path = "../gcm-sst", default-features = false }
+typenum = { workspace = true, default-features = false }
+subtle = { workspace = true }
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
