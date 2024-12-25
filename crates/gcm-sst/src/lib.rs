@@ -8,3 +8,5 @@ mod rust_crypto;
 mod tests;
 
 pub use gcm::*;
+#[cfg(feature = "rust-crypto")]
+pub use rust_crypto::CtrGen;

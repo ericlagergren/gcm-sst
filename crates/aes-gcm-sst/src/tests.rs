@@ -1,20 +1,50 @@
 #![cfg(test)]
 
-use crate::AesGcm128Sst4;
+use serde::Deserialize;
+
+use crate::{AeadInPlace, AesGcm128Sst4, KeyInit, Nonce};
+
+#[derive(Deserialize)]
+struct TestCases {
+    #[serde(with = "hex::serde")]
+    key: Vec<u8>,
+    #[serde(with = "hex::serde")]
+    nonce: Vec<u8>,
+    cases: Vec<TestCase>,
+}
+
+#[derive(Deserialize)]
+struct TestCase {
+    name: String,
+    #[serde(with = "hex::serde")]
+    aad: Vec<u8>,
+    #[serde(with = "hex::serde")]
+    plaintext: Vec<u8>,
+    #[serde(with = "hex::serde")]
+    tag: Vec<u8>,
+    #[serde(with = "hex::serde")]
+    ciphertext: Vec<u8>,
+}
 
 #[test]
-fn test_basic() {
-    let key = [
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-        0x0f,
-    ];
-    let nonce = [
-        0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b,
-    ];
-    let aead = AesGcm128Sst4::new(&key.into());
-    let want = [0x9b, 0x1d, 0x49, 0xea];
-    let got = aead
-        .seal(&mut [], &nonce.into(), &[], &[])
-        .expect("should be able to encrypt");
-    assert_eq!(got, want.into());
+fn test_aes_gcm_128_vectors() {
+    const DATA: &str = include_str!("testdata/aes_gcm_128_sst.json");
+
+    let tests: TestCases = serde_json::from_str(DATA).expect("should be able to parse test cases");
+    let nonce = Nonce::<AesGcm128Sst4>::from_slice(&tests.nonce);
+    for test in tests.cases {
+        let aead = AesGcm128Sst4::new_from_slice(&tests.key).unwrap();
+
+        let mut got_ct = test.plaintext.clone();
+        let got_tag = aead
+            .encrypt_in_place_detached(&nonce, &test.aad, &mut got_ct)
+            .expect("should be able to encrypt");
+        assert_eq!(&got_tag[..], &test.tag[..], "case #{}", test.name);
+        assert_eq!(&got_ct, &test.ciphertext, "case #{}", test.name);
+
+        let mut got_pt = got_ct.clone();
+        aead.decrypt_in_place_detached(&nonce, &test.aad, &mut got_pt, &got_tag)
+            .expect("should be able to decrypt");
+        assert_eq!(&got_pt, &test.plaintext, "case #{}", test.name);
+    }
 }

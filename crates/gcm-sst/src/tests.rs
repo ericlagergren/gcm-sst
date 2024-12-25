@@ -1,14 +1,12 @@
 #![cfg(test)]
 
 use aes::Aes128;
-use cipher::{KeyInit, KeyIvInit};
+use cipher::KeyInit;
 use ctr::flavors;
 use serde::Deserialize;
 use typenum::U4;
 
 use crate::{rust_crypto::CtrGen, GcmSst, Nonce};
-
-//type Ctr32BE<A> = CtrCore<A, ctr::flavors::Ctr32BE>;
 
 type Ctr32BE<A> = CtrGen<A, flavors::Ctr32BE>;
 type Aes128Ctr32BE = Ctr32BE<Aes128>;
@@ -41,12 +39,12 @@ fn test_aes_gcm_128_vectors() {
     const DATA: &str = include_str!("testdata/aes_gcm_128_sst.json");
 
     let tests: TestCases = serde_json::from_str(DATA).expect("should be able to parse test cases");
-    let key = Aes128Ctr32BE::new_from_slices(&tests.key);
+    let aes = Aes128::new_from_slice(&tests.key).unwrap();
     let nonce = Nonce::from_slice(&tests.nonce);
     for test in tests.cases {
         let mut got_ct = vec![0u8; test.ciphertext.len()];
 
-        let aead = AesGcm128Sst4::new(Aes128::new(&key));
+        let aead = AesGcm128Sst4::new(Aes128Ctr32BE::new(aes.clone()));
         let got_tag = aead
             .seal(&mut got_ct, &nonce, &test.plaintext, &test.aad)
             .expect("should be able to encrypt");

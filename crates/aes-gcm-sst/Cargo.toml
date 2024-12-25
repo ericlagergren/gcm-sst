@@ -29,10 +29,20 @@ std = [
 ]
 
 [dependencies]
+aead = { version = "0.5" }
 aes = { version = "0.8", default-features = false }
+cipher = { version = "0.4" }
+ctr = { version = "0.9" }
 gcm-sst = { version = "0.1.0", path = "../gcm-sst", default-features = false }
-typenum = { workspace = true, default-features = false }
+typenum = { workspace = true, default-features = false, features = ["const-generics"] }
 subtle = { workspace = true }
+
+[dev-dependencies]
+aes-gcm-sst = { path = "." }
+aes = { version = "0.8" }
+hex = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

@@ -1,12 +1,11 @@
 use core::{fmt, marker::PhantomData};
 
-use cfg_if::cfg_if;
 pub use crypto_common::generic_array::ArrayLength;
 use crypto_common::generic_array::GenericArray;
 use inout::InOutBuf;
-use polyhash::{Key as PolyKey, Polyval};
+use polyhash::{Key as PolyKey, Lite, Polyval};
 use subtle::ConstantTimeEq;
-use typenum::{IsGreaterOrEqual, IsLessOrEqual, Unsigned, U12, U16, U4};
+use typenum::{generic_const_mappings::U, IsGreaterOrEqual, IsLessOrEqual};
 
 /// An error returned by [`GcmSst`].
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -26,24 +25,18 @@ pub trait Generator {
 
 /// A stream of pseudorandom bytes.
 pub trait Keystream {
-    /// The keystream block.
-    type Block: Into<[u8; 16]>;
-
     /// Returns the next keystream block.
-    fn next(&mut self) -> Self::Block;
+    fn next(&mut self) -> [u8; 16];
 
     /// Applies the remainder of the keystream to `buf`.
     fn apply(self, buf: InOutBuf<'_, '_, u8>);
 }
 
-/// A 128-bit chunk.
-type Chunk = GenericArray<u8, U16>;
+/// TODO
+pub const NONCE_SIZE: usize = 12;
 
 /// TODO
-pub const NONCE_SIZE: usize = <NonceSize as Unsigned>::USIZE;
-
-/// TODO
-pub type NonceSize = U12;
+pub type NonceSize = U<{ NONCE_SIZE }>;
 
 /// The nonce used by GCM-SST.
 pub type Nonce = GenericArray<u8, NonceSize>;
@@ -51,8 +44,20 @@ pub type Nonce = GenericArray<u8, NonceSize>;
 /// An authentication tag.
 pub type Tag<N> = GenericArray<u8, N>;
 
+/// TODO
+pub const MAX_TAG_SIZE: usize = 16;
+
+/// TODO
+pub type MaxTagSize = U<{ MAX_TAG_SIZE }>;
+
+/// TODO
+pub const MIN_TAG_SIZE: usize = 16;
+
+/// TODO
+pub type MinTagSize = U<{ MIN_TAG_SIZE }>;
+
 /// A cipher using GCM-SST mode.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GcmSst<G, T> {
     generator: G,
     _tag: PhantomData<T>,
@@ -71,7 +76,7 @@ impl<G, T> GcmSst<G, T> {
 impl<G, T> GcmSst<G, T>
 where
     G: Generator,
-    T: ArrayLength<u8> + IsGreaterOrEqual<U4> + IsLessOrEqual<U16>,
+    T: ArrayLength<u8> + IsGreaterOrEqual<MinTagSize> + IsLessOrEqual<MaxTagSize>,
 {
     const TAG_SIZE: usize = T::USIZE;
 
@@ -89,12 +94,29 @@ where
         plaintext: &[u8],
         additional_data: &[u8],
     ) -> Result<Tag<T>, Error> {
-        self.encrypt(dst, nonce, plaintext, additional_data)
+        let ciphertext = dst.get_mut(..plaintext.len()).ok_or(Error)?;
+        let buf = InOutBuf::new(plaintext, ciphertext).map_err(|_| Error)?;
+        self.encrypt(nonce, buf, additional_data)
     }
 
-    fn encrypt(&self, ct: &mut [u8], nonce: &Nonce, pt: &[u8], ad: &[u8]) -> Result<Tag<T>, Error> {
-        let ct = ct.get_mut(..pt.len()).ok_or(Error)?;
+    /// Encrypts and authenticates `data` in place and
+    /// authenticates `additional_data`.
+    #[inline]
+    pub fn seal_in_place(
+        &self,
+        nonce: &Nonce,
+        data: &mut [u8],
+        additional_data: &[u8],
+    ) -> Result<Tag<T>, Error> {
+        self.encrypt(nonce, data.into(), additional_data)
+    }
 
+    fn encrypt(
+        &self,
+        nonce: &Nonce,
+        mut buf: InOutBuf<'_, '_, u8>,
+        ad: &[u8],
+    ) -> Result<Tag<T>, Error> {
         // Initiate keystream generator with K and N
         let mut ks = self.generator.init(nonce);
 
@@ -104,16 +126,17 @@ where
         let m = ks.next();
 
         // Let ct = P ⊕ truncate(Z[3:n + 2], len(P))
-        ks.apply(InOutBuf::new(pt, ct).assume("`ct.len()` == `pt.len()`")?);
+        ks.apply(buf.reborrow());
+        let ct = buf.get_out();
 
         // Let tag = truncate(full_tag, tag_length)
         let tag = {
             // Let full_tag = POLYVAL(Q, X ⊕ L) ⊕ M
-            let full_tag: Chunk = {
+            let full_tag = {
                 // Let S = zeropad(A) || zeropad(ct)
                 // Let X = POLYVAL(H, S[0], S[1], ...)
                 let x = {
-                    let mut poly = Polyval::new(&PolyKey::new_unchecked(&h.into()));
+                    let mut poly = Polyval::<Lite>::new(&PolyKey::new_unchecked(&h.into()));
                     poly.update_padded(ad); // zeropad(A)
                     poly.update_padded(ct); // zeropad(ct)
                     u128::from_le_bytes(poly.tag().into())
@@ -125,20 +148,20 @@ where
                     let (ct_len, ad_len) = chunk.split_at_mut(8);
                     ct_len.copy_from_slice(&(ct.len() as u64 * 8).to_le_bytes()); // LE64(len(ct))
                     ad_len.copy_from_slice(&(ad.len() as u64 * 8).to_le_bytes()); // LE64(len(A))
-                    u128::from_le_bytes(chunk.into())
+                    u128::from_le_bytes(chunk)
                 };
 
                 let poly = {
-                    let mut poly = Polyval::new(&PolyKey::new_unchecked(&q.into()));
+                    let mut poly = Polyval::<Lite>::new(&PolyKey::new_unchecked(&q.into()));
                     poly.update_block(&(x ^ l).to_le_bytes());
-                    poly.tag().into()
+                    u128::from_le_bytes(poly.tag().into())
                 };
-                xor(&poly, &m.into())
+                poly ^ u128::from_le_bytes(m)
             };
 
             // Let tag = truncate(full_tag, tag_length)
             let mut tag = Tag::default();
-            tag.copy_from_slice(&full_tag[..Self::TAG_SIZE]);
+            tag.copy_from_slice(&full_tag.to_le_bytes()[..Self::TAG_SIZE]);
             tag
         };
 
@@ -152,10 +175,6 @@ where
     /// # Requirements
     ///
     /// - `dst` must be at least as long as `ciphertext`.
-    /// - `ciphertext` must be at most [`C_MAX`][Self::C_MAX]
-    /// octets long.
-    /// - `additional_data` must be at most
-    /// [`A_MAX`][Self::A_MAX] octets long.
     #[inline]
     pub fn open(
         &self,
@@ -165,21 +184,32 @@ where
         tag: &Tag<T>,
         additional_data: &[u8],
     ) -> Result<(), Error> {
-        self.decrypt(dst, nonce, ciphertext, tag, additional_data)
+        let plaintext = dst.get_mut(..ciphertext.len()).ok_or(Error)?;
+        let buf = InOutBuf::new(ciphertext, plaintext).map_err(|_| Error)?;
+        self.decrypt(nonce, buf, tag, additional_data)
+    }
+
+    /// Decrypts and authenticates `plaintext` in place and
+    /// authenticates `additional_data`.
+    #[inline]
+    pub fn open_in_place(
+        &self,
+        nonce: &Nonce,
+        data: &mut [u8],
+        tag: &Tag<T>,
+        additional_data: &[u8],
+    ) -> Result<(), Error> {
+        self.decrypt(nonce, data.into(), tag, additional_data)
     }
 
     fn decrypt(
         &self,
-        pt: &mut [u8],
         nonce: &Nonce,
-        ct: &[u8],
+        buf: InOutBuf<'_, '_, u8>,
         tag: &Tag<T>,
         ad: &[u8],
     ) -> Result<(), Error> {
-        // if ct.len() as u64 > Self::C_MAX || ad.len() as u64 > Self::A_MAX {
-        //     return Err(Error);
-        // }
-        let pt = pt.get_mut(..ct.len()).ok_or(Error)?;
+        let ct = buf.get_in();
 
         let mut ks = self.generator.init(nonce);
 
@@ -191,51 +221,43 @@ where
         // Let S = zeropad(A) || zeropad(ct) || LE64(len(ct)) || LE64(len(A))
         //
         // Let full_tag = POLYVAL(Q, X XOR S[m + n]) XOR M
-        let full_tag: Chunk = {
+        let full_tag = {
             // Let X = POLYVAL(H, S[0], S[1], ..., S[m + n - 1])
             let x = {
-                let mut poly = Polyval::new(&PolyKey::new(&h.into()).assume("`h` is non-zero")?);
+                let mut poly =
+                    Polyval::<Lite>::new(&PolyKey::new(&h.into()).assume("`h` is non-zero")?);
                 poly.update_padded(ad); // zeropad(A)
                 poly.update_padded(ct); // zeropad(ct)
-                poly.tag().into()
+                u128::from_le_bytes(poly.tag().into())
             };
 
             let s_m_n = {
-                let mut chunk = Chunk::default();
+                let mut chunk = [0; 16];
                 let (ct_len, ad_len) = chunk.split_at_mut(8);
                 ct_len.copy_from_slice(&(ct.len() as u64 * 8).to_le_bytes()); // LE64(len(ct))
                 ad_len.copy_from_slice(&(ad.len() as u64 * 8).to_le_bytes()); // LE64(len(A))
-                chunk.into()
+                u128::from_le_bytes(chunk)
             };
 
             let poly = {
-                let mut poly = Polyval::new(&PolyKey::new(&q.into()).assume("`q` is non-zero")?);
-                poly.update_block(&xor(&x, &s_m_n).into());
-                poly.tag().into()
+                let mut poly =
+                    Polyval::<Lite>::new(&PolyKey::new(&q.into()).assume("`q` is non-zero")?);
+                poly.update_block(&(x ^ s_m_n).to_le_bytes());
+                u128::from_le_bytes(poly.tag().into())
             };
-            xor(&poly, &m.into())
+            poly ^ u128::from_le_bytes(m)
         };
         // Let expected_tag = truncate(full_tag, tag_length)
         // If tag != expected_tag, return error and abort
-        if !bool::from(full_tag[..Self::TAG_SIZE].ct_eq(tag)) {
+        if !bool::from(full_tag.to_le_bytes()[..Self::TAG_SIZE].ct_eq(tag)) {
             return Err(Error);
         }
 
         // Let P = ct XOR truncate(Z[3:n + 2], len(ct))
-        ks.apply(InOutBuf::new(ct, pt).assume("`ct.len()` == `pt.len()`")?);
+        ks.apply(buf);
 
         Ok(())
     }
-}
-
-/// Returns x^y.
-#[inline(always)]
-fn xor(x: &[u8; 16], y: &[u8; 16]) -> Chunk {
-    let mut z = Chunk::default();
-    for ((z, x), y) in z.iter_mut().zip(x).zip(y) {
-        *z = x ^ y;
-    }
-    z
 }
 
 impl From<Bug> for Error {
@@ -251,13 +273,13 @@ impl Bug {
     #[cold]
     #[track_caller]
     fn new(_msg: &'static str) -> Self {
-        cfg_if! {
-            if #[cfg(debug_assertions)] {
-                Self
-            } else {
-                #![allow(clippy::disallowed_macros)]
-                unreachable!("{_msg}");
-            }
+        #[cfg(not(debug_assertions))]
+        {
+            Self
+        }
+        #[cfg(debug_assertions)]
+        {
+            unreachable!("{_msg}");
         }
     }
 }

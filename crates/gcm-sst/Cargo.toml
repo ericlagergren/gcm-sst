@@ -41,7 +41,7 @@ generic-array = { workspace = true }
 hex = { version = "0.4", features = ["serde"] } # TODO
 hybrid-array = { version = "0.2.0-rc.6" }
 inout = { version = "0.1" }
-polyhash = { version = "0.1" }
+polyhash = { version = "0.2" }
 subtle = { workspace = true }
 typenum = { workspace = true }
 
