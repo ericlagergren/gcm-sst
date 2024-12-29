@@ -5,7 +5,7 @@ use crypto_common::generic_array::GenericArray;
 use inout::InOutBuf;
 use polyhash::{Key as PolyKey, Lite, Polyval};
 use subtle::ConstantTimeEq;
-use typenum::{generic_const_mappings::U, IsGreaterOrEqual, IsLessOrEqual};
+use typenum::{generic_const_mappings::U, IsGreaterOrEqual, IsLessOrEqual, U16};
 
 /// An error returned by [`GcmSst`].
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -17,6 +17,24 @@ impl fmt::Display for Error {
     }
 }
 
+/// TODO
+pub trait IntoGenerator {
+    /// TODO
+    type Generator;
+
+    /// TODO
+    fn into_generator(self) -> Self::Generator;
+}
+
+impl<G: Generator> IntoGenerator for G {
+    type Generator = Self;
+
+    #[inline]
+    fn into_generator(self) -> Self::Generator {
+        self
+    }
+}
+
 /// A keystream generator.
 pub trait Generator {
     /// Uses `nonce` to generate a new keystream.
@@ -24,12 +42,26 @@ pub trait Generator {
 }
 
 /// A stream of pseudorandom bytes.
-pub trait Keystream {
+pub trait Keystream: Sized {
     /// Returns the next keystream block.
     fn next(&mut self) -> [u8; 16];
 
     /// Applies the remainder of the keystream to `buf`.
-    fn apply(self, buf: InOutBuf<'_, '_, u8>);
+    fn apply(mut self, buf: InOutBuf<'_, '_, u8>) {
+        let (mut head, mut tail) = buf.into_chunks::<U16>();
+        for chunk in head.get_out() {
+            let block = self.next();
+            for (z, x) in chunk.iter_mut().zip(block.iter()) {
+                *z ^= x;
+            }
+        }
+        if !tail.is_empty() {
+            let block = self.next();
+            for (z, x) in tail.get_out().iter_mut().zip(block.iter()) {
+                *z ^= x;
+            }
+        }
+    }
 }
 
 /// TODO
@@ -57,7 +89,7 @@ pub const MIN_TAG_SIZE: usize = 16;
 pub type MinTagSize = U<{ MIN_TAG_SIZE }>;
 
 /// A cipher using GCM-SST mode.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct GcmSst<G, T> {
     generator: G,
     _tag: PhantomData<T>,
@@ -257,6 +289,18 @@ where
         ks.apply(buf);
 
         Ok(())
+    }
+}
+
+impl<G, T> Clone for GcmSst<G, T>
+where
+    G: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            generator: self.generator.clone(),
+            _tag: PhantomData,
+        }
     }
 }
 

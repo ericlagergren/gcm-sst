@@ -34,17 +34,41 @@ struct TestCase {
     ciphertext: Vec<u8>,
 }
 
+// #[test]
+// fn test_aes_gcm_128_vectors() {
+//     const DATA: &str = include_str!("testdata/aes_gcm_128_sst.json");
+
+//     let tests: TestCases = serde_json::from_str(DATA).expect("should be able to parse test cases");
+//     let aes = Aes128::new_from_slice(&tests.key).unwrap();
+//     let nonce = Nonce::from_slice(&tests.nonce);
+//     for test in tests.cases {
+//         let mut got_ct = vec![0u8; test.ciphertext.len()];
+
+//         let aead = AesGcm128Sst4::new(Aes128Ctr32BE::new(aes.clone()));
+//         let got_tag = aead
+//             .seal(&mut got_ct, &nonce, &test.plaintext, &test.aad)
+//             .expect("should be able to encrypt");
+//         assert_eq!(&got_tag[..], &test.tag[..], "case #{}", test.name);
+//         assert_eq!(&got_ct, &test.ciphertext, "case #{}", test.name);
+
+//         let mut got_pt = vec![0u8; test.plaintext.len()];
+//         aead.open(&mut got_pt, &nonce, &test.ciphertext, &got_tag, &test.aad)
+//             .expect("should be able to decrypt");
+//         assert_eq!(&got_pt, &test.plaintext, "case #{}", test.name);
+//     }
+// }
+
 #[test]
-fn test_aes_gcm_128_vectors() {
+fn test_aes_gcm_128_vectors_v2() {
     const DATA: &str = include_str!("testdata/aes_gcm_128_sst.json");
 
     let tests: TestCases = serde_json::from_str(DATA).expect("should be able to parse test cases");
-    let aes = Aes128::new_from_slice(&tests.key).unwrap();
     let nonce = Nonce::from_slice(&tests.nonce);
     for test in tests.cases {
         let mut got_ct = vec![0u8; test.ciphertext.len()];
 
-        let aead = AesGcm128Sst4::new(Aes128Ctr32BE::new(aes.clone()));
+        let aead = GcmSst::<ctr::CtrCore<Aes128, flavors::Ctr32BE>, U4>::new_from_slice(&tests.key)
+            .unwrap();
         let got_tag = aead
             .seal(&mut got_ct, &nonce, &test.plaintext, &test.aad)
             .expect("should be able to encrypt");

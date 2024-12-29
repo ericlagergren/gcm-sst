@@ -8,8 +8,8 @@ use aead::{
     AeadCore, AeadInPlace,
 };
 use cipher::{
-    Block, BlockCipher, BlockEncryptMut, BlockSizeUser, InnerIvInit, KeyInit, KeySizeUser,
-    StreamCipherCore,
+    crypto_common::InnerUser, Block, BlockCipher, BlockEncryptMut, BlockSizeUser, InnerIvInit, Iv,
+    IvSizeUser, KeyInit, KeySizeUser, StreamCipher, StreamCipherCore,
 };
 use ctr::{flavors::CtrFlavor, CtrCore};
 use inout::InOutBuf;
@@ -31,46 +31,45 @@ impl From<aead::Error> for Error {
     }
 }
 
-impl<S> Keystream for S
-where
-    S: StreamCipherCore<BlockSize = U16>,
-{
+impl<S: StreamCipher> Keystream for S {
     fn next(&mut self) -> [u8; 16] {
-        let mut block = Block::<S>::default();
-        self.write_keystream_block(&mut block);
-        block.into()
+        let mut block = [0; 16];
+        self.apply_keystream(&mut block);
+        block
     }
 
-    fn apply(self, buf: InOutBuf<'_, '_, u8>) {
-        self.apply_keystream_partial(buf)
+    fn apply(mut self, buf: InOutBuf<'_, '_, u8>) {
+        self.apply_keystream_inout(buf)
     }
 }
 
-// impl <S> Generator for S
-// where S: Keystream + KeyIvInit {
-//     fn init(&self, nonce:&Nonce)->Self {
-//         Self::new()
+// impl<C> Generator for C
+// where
+//     for<'a> &'a C: BlockEncryptMut + BlockCipher<BlockSize = U16>,
+// {
+//     fn init(&self, nonce: &Nonce) -> impl Keystream {
+//         InnerIvInit::inner_iv_init(self, nonce)
 //     }
 // }
 
-impl<C, T> KeySizeUser for GcmSst<C, T>
+impl<G, T> KeySizeUser for GcmSst<G, T>
 where
-    C: KeySizeUser,
+    G: KeySizeUser,
 {
-    type KeySize = C::KeySize;
+    type KeySize = G::KeySize;
 }
 
-impl<C, T> KeyInit for GcmSst<C, T>
+impl<G, T> KeyInit for GcmSst<G, T>
 where
-    C: KeyInit,
+    G: KeyInit,
 {
     fn new(key: &GenericArray<u8, Self::KeySize>) -> Self {
-        let cipher = C::new(key);
+        let cipher = G::new(key);
         Self::new(cipher)
     }
 }
 
-impl<C, T> AeadCore for GcmSst<C, T>
+impl<G, T> AeadCore for GcmSst<G, T>
 where
     T: ArrayLength<u8> + IsGreaterOrEqual<MinTagSize> + IsLessOrEqual<MaxTagSize>,
 {
@@ -107,34 +106,34 @@ where
 }
 
 /// Turns a TODO into a [`Generator`].
-pub struct CtrGen<C, F> {
+pub struct CtrGen<S, C> {
     cipher: C,
-    _f: PhantomData<F>,
+    _s: PhantomData<S>,
 }
 
-impl<C, F> CtrGen<C, F> {
+impl<S, C> CtrGen<S, C> {
     /// TODO
     pub const fn new(cipher: C) -> Self {
         Self {
             cipher,
-            _f: PhantomData,
+            _s: PhantomData,
         }
     }
 }
 
-impl<C, F> Clone for CtrGen<C, F>
+impl<S, C> Clone for CtrGen<S, C>
 where
     C: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             cipher: self.cipher.clone(),
-            _f: PhantomData,
+            _s: PhantomData,
         }
     }
 }
 
-impl<C, F> fmt::Debug for CtrGen<C, F>
+impl<S, C> fmt::Debug for CtrGen<S, C>
 where
     C: fmt::Debug,
 {
@@ -145,48 +144,27 @@ where
     }
 }
 
-impl<C, F> Generator for CtrGen<C, F>
+impl<'a, S, C> Generator for CtrGen<S, &'a C>
 where
-    for<'a> &'a C: BlockEncryptMut + BlockCipher<BlockSize = U16>,
-    for<'a> F: CtrFlavor<<&'a C as BlockSizeUser>::BlockSize>,
+    S: StreamCipher + InnerIvInit<Inner = &'a C, IvSize = NonceSize>,
 {
     fn init(&self, nonce: &Nonce) -> impl Keystream {
-        CtrCore::<&C, F>::inner_iv_init(&self.cipher, &{
-            let mut block = Block::<&C>::default();
-            block[..12].copy_from_slice(nonce);
-            block
+        S::inner_iv_init(&self.cipher, &{
+            let mut iv = Iv::<S>::default();
+            iv[..12].copy_from_slice(nonce);
+            iv
         })
     }
 }
 
-// impl<T, C, F> From<T> for CtrGen<C, F> {
-//     fn from(cipher: C) -> Self {
-//         Self {
-//             cipher,
-//             _f: PhantomData,
-//         }
-//     }
-// }
-
-// impl Generator for Aes128 {
-//     type Keystream = ();
-//     fn init(&self, nonce: &Nonce) -> Self::Keystream {
-//         Self::inner_iv_init((), &{
-//             let mut block = Block::default();
-//             block[..12].copy_from_slice(nonce);
-//             block
-//         })
-//     }
-// }
-
-impl<C, F> KeySizeUser for CtrGen<C, F>
+impl<S, C> KeySizeUser for CtrGen<S, C>
 where
     C: KeySizeUser,
 {
     type KeySize = C::KeySize;
 }
 
-impl<C, F> KeyInit for CtrGen<C, F>
+impl<S, C> KeyInit for CtrGen<S, C>
 where
     C: KeyInit,
 {

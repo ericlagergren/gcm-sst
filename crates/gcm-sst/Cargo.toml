@@ -47,6 +47,7 @@ typenum = { workspace = true }
 
 [dev-dependencies]
 gcm-sst = { path = ".", features = ["rust-crypto"] }
+
 aes = { version = "0.8" }
 hex = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
