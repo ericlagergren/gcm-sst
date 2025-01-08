@@ -8,14 +8,16 @@ use aead::{
     AeadCore, AeadInPlace,
 };
 use cipher::{
-    crypto_common::InnerUser, Block, BlockCipher, BlockEncryptMut, BlockSizeUser, InnerIvInit, Iv,
-    IvSizeUser, KeyInit, KeySizeUser, StreamCipher, StreamCipherCore,
+    BlockCipher, BlockEncrypt, InnerIvInit, Iv, KeyInit, KeySizeUser, StreamCipher,
+    StreamCipherCoreWrapper,
 };
 use ctr::{flavors::CtrFlavor, CtrCore};
 use inout::InOutBuf;
-use typenum::{IsGreaterOrEqual, IsLessOrEqual, U16};
+use typenum::{GrEq, IsGreaterOrEqual, IsLess, IsLessOrEqual, Le, LeEq, NonZero, U12, U256};
 
-use crate::{Error, GcmSst, Generator, Keystream, MaxTagSize, MinTagSize, Nonce, NonceSize};
+use crate::{
+    Error, GcmSst, Generator, Keystream, MaxTagSize, MinTagSize, Nonce, NonceSize, NONCE_SIZE,
+};
 
 impl From<Error> for aead::Error {
     #[inline]
@@ -32,25 +34,11 @@ impl From<aead::Error> for Error {
 }
 
 impl<S: StreamCipher> Keystream for S {
-    fn next(&mut self) -> [u8; 16] {
-        let mut block = [0; 16];
-        self.apply_keystream(&mut block);
-        block
-    }
-
-    fn apply(mut self, buf: InOutBuf<'_, '_, u8>) {
-        self.apply_keystream_inout(buf)
+    #[inline]
+    fn try_apply(&mut self, buf: InOutBuf<'_, '_, u8>) -> Result<(), Error> {
+        self.try_apply_keystream_inout(buf).map_err(|_| Error)
     }
 }
-
-// impl<C> Generator for C
-// where
-//     for<'a> &'a C: BlockEncryptMut + BlockCipher<BlockSize = U16>,
-// {
-//     fn init(&self, nonce: &Nonce) -> impl Keystream {
-//         InnerIvInit::inner_iv_init(self, nonce)
-//     }
-// }
 
 impl<G, T> KeySizeUser for GcmSst<G, T>
 where
@@ -63,9 +51,9 @@ impl<G, T> KeyInit for GcmSst<G, T>
 where
     G: KeyInit,
 {
+    #[inline]
     fn new(key: &GenericArray<u8, Self::KeySize>) -> Self {
-        let cipher = G::new(key);
-        Self::new(cipher)
+        Self::new(G::new(key))
     }
 }
 
@@ -82,7 +70,10 @@ impl<G, T> AeadInPlace for GcmSst<G, T>
 where
     G: Generator,
     T: ArrayLength<u8> + IsGreaterOrEqual<MinTagSize> + IsLessOrEqual<MaxTagSize>,
+    GrEq<T, MinTagSize>: NonZero,
+    LeEq<T, MaxTagSize>: NonZero,
 {
+    #[inline]
     fn encrypt_in_place_detached(
         &self,
         nonce: &aead::Nonce<Self>,
@@ -93,6 +84,7 @@ where
             .map_err(Into::into)
     }
 
+    #[inline]
     fn decrypt_in_place_detached(
         &self,
         nonce: &aead::Nonce<Self>,
@@ -105,35 +97,37 @@ where
     }
 }
 
-/// Turns a TODO into a [`Generator`].
-pub struct CtrGen<S, C> {
+/// A counter-mode [`Generator`].
+pub struct CtrGen<C, F> {
     cipher: C,
-    _s: PhantomData<S>,
+    _flavor: PhantomData<F>,
 }
 
-impl<S, C> CtrGen<S, C> {
-    /// TODO
-    pub const fn new(cipher: C) -> Self {
+impl<C, F> CtrGen<C, F> {
+    /// Creates a `CtrCore`.
+    #[inline]
+    pub fn new(cipher: C) -> Self {
         Self {
             cipher,
-            _s: PhantomData,
+            _flavor: PhantomData,
         }
     }
 }
 
-impl<S, C> Clone for CtrGen<S, C>
+impl<C, F> Clone for CtrGen<C, F>
 where
     C: Clone,
 {
+    #[inline]
     fn clone(&self) -> Self {
         Self {
             cipher: self.cipher.clone(),
-            _s: PhantomData,
+            _flavor: PhantomData,
         }
     }
 }
 
-impl<S, C> fmt::Debug for CtrGen<S, C>
+impl<C, F> fmt::Debug for CtrGen<C, F>
 where
     C: fmt::Debug,
 {
@@ -144,32 +138,41 @@ where
     }
 }
 
-impl<'a, S, C> Generator for CtrGen<S, &'a C>
+impl<C, F> Generator for CtrGen<C, F>
 where
-    S: StreamCipher + InnerIvInit<Inner = &'a C, IvSize = NonceSize>,
+    C: BlockEncrypt + BlockCipher,
+    C::BlockSize: IsLess<U256> + IsGreaterOrEqual<U12>,
+    Le<C::BlockSize, U256>: NonZero,
+    F: CtrFlavor<C::BlockSize>,
 {
+    #[inline]
     fn init(&self, nonce: &Nonce) -> impl Keystream {
-        S::inner_iv_init(&self.cipher, &{
-            let mut iv = Iv::<S>::default();
-            iv[..12].copy_from_slice(nonce);
+        let core = CtrCore::<_, F>::inner_iv_init(&self.cipher, &{
+            let mut iv = Iv::<CtrCore<&C, F>>::default();
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "The compiler can prove that `NONCE_SIZE` is in bounds"
+            )]
+            iv[..NONCE_SIZE].copy_from_slice(nonce);
             iv
-        })
+        });
+        StreamCipherCoreWrapper::from_core(core)
     }
 }
 
-impl<S, C> KeySizeUser for CtrGen<S, C>
+impl<C, F> KeySizeUser for CtrGen<C, F>
 where
     C: KeySizeUser,
 {
     type KeySize = C::KeySize;
 }
 
-impl<S, C> KeyInit for CtrGen<S, C>
+impl<C, F> KeyInit for CtrGen<C, F>
 where
     C: KeyInit,
 {
+    #[inline]
     fn new(key: &GenericArray<u8, Self::KeySize>) -> Self {
-        let cipher = C::new(key);
-        Self::new(cipher)
+        Self::new(C::new(key))
     }
 }

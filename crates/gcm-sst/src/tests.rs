@@ -1,83 +1,27 @@
 #![cfg(test)]
 
-use aes::Aes128;
-use cipher::KeyInit;
-use ctr::flavors;
-use serde::Deserialize;
-use typenum::U4;
+use aes::{Aes128, Aes256};
+use ctr::flavors::Ctr32BE;
+use typenum::{U4, U8};
 
-use crate::{rust_crypto::CtrGen, GcmSst, Nonce};
+use crate::{
+    rust_crypto::CtrGen,
+    testing::{run_tests, AES_128_GCM_SST4, AES_128_GCM_SST8, AES_256_GCM_SST8},
+    GcmSst,
+};
 
-type Ctr32BE<A> = CtrGen<A, flavors::Ctr32BE>;
-type Aes128Ctr32BE = Ctr32BE<Aes128>;
-type AesGcm128Sst4 = GcmSst<Aes128Ctr32BE, U4>;
+type Aes128GcmSst4 = GcmSst<CtrGen<Aes128, Ctr32BE>, U4>;
+type Aes128GcmSst8 = GcmSst<CtrGen<Aes128, Ctr32BE>, U8>;
+type Aes256GcmSst8 = GcmSst<CtrGen<Aes256, Ctr32BE>, U8>;
 
-#[derive(Deserialize)]
-struct TestCases {
-    #[serde(with = "hex::serde")]
-    key: Vec<u8>,
-    #[serde(with = "hex::serde")]
-    nonce: Vec<u8>,
-    cases: Vec<TestCase>,
+macro_rules! tests {
+    ($name:ident, $aead:ty, $tests:ident) => {
+        #[test]
+        fn $name() {
+            run_tests::<$aead>(&*$tests);
+        }
+    };
 }
-
-#[derive(Deserialize)]
-struct TestCase {
-    name: String,
-    #[serde(with = "hex::serde")]
-    aad: Vec<u8>,
-    #[serde(with = "hex::serde")]
-    plaintext: Vec<u8>,
-    #[serde(with = "hex::serde")]
-    tag: Vec<u8>,
-    #[serde(with = "hex::serde")]
-    ciphertext: Vec<u8>,
-}
-
-// #[test]
-// fn test_aes_gcm_128_vectors() {
-//     const DATA: &str = include_str!("testdata/aes_gcm_128_sst.json");
-
-//     let tests: TestCases = serde_json::from_str(DATA).expect("should be able to parse test cases");
-//     let aes = Aes128::new_from_slice(&tests.key).unwrap();
-//     let nonce = Nonce::from_slice(&tests.nonce);
-//     for test in tests.cases {
-//         let mut got_ct = vec![0u8; test.ciphertext.len()];
-
-//         let aead = AesGcm128Sst4::new(Aes128Ctr32BE::new(aes.clone()));
-//         let got_tag = aead
-//             .seal(&mut got_ct, &nonce, &test.plaintext, &test.aad)
-//             .expect("should be able to encrypt");
-//         assert_eq!(&got_tag[..], &test.tag[..], "case #{}", test.name);
-//         assert_eq!(&got_ct, &test.ciphertext, "case #{}", test.name);
-
-//         let mut got_pt = vec![0u8; test.plaintext.len()];
-//         aead.open(&mut got_pt, &nonce, &test.ciphertext, &got_tag, &test.aad)
-//             .expect("should be able to decrypt");
-//         assert_eq!(&got_pt, &test.plaintext, "case #{}", test.name);
-//     }
-// }
-
-#[test]
-fn test_aes_gcm_128_vectors_v2() {
-    const DATA: &str = include_str!("testdata/aes_gcm_128_sst.json");
-
-    let tests: TestCases = serde_json::from_str(DATA).expect("should be able to parse test cases");
-    let nonce = Nonce::from_slice(&tests.nonce);
-    for test in tests.cases {
-        let mut got_ct = vec![0u8; test.ciphertext.len()];
-
-        let aead = GcmSst::<ctr::CtrCore<Aes128, flavors::Ctr32BE>, U4>::new_from_slice(&tests.key)
-            .unwrap();
-        let got_tag = aead
-            .seal(&mut got_ct, &nonce, &test.plaintext, &test.aad)
-            .expect("should be able to encrypt");
-        assert_eq!(&got_tag[..], &test.tag[..], "case #{}", test.name);
-        assert_eq!(&got_ct, &test.ciphertext, "case #{}", test.name);
-
-        let mut got_pt = vec![0u8; test.plaintext.len()];
-        aead.open(&mut got_pt, &nonce, &test.ciphertext, &got_tag, &test.aad)
-            .expect("should be able to decrypt");
-        assert_eq!(&got_pt, &test.plaintext, "case #{}", test.name);
-    }
-}
+tests!(aes_gcm_128_sst4, Aes128GcmSst4, AES_128_GCM_SST4);
+tests!(aes_gcm_128_sst8, Aes128GcmSst8, AES_128_GCM_SST8);
+tests!(aes_gcm_256_sst8, Aes256GcmSst8, AES_256_GCM_SST8);

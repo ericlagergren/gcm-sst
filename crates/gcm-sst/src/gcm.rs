@@ -1,37 +1,21 @@
-use core::{fmt, marker::PhantomData};
+use core::{error, fmt, marker::PhantomData};
 
-pub use crypto_common::generic_array::ArrayLength;
-use crypto_common::generic_array::GenericArray;
+pub use generic_array::ArrayLength;
+use generic_array::GenericArray;
 use inout::InOutBuf;
 use polyhash::{Key as PolyKey, Lite, Polyval};
 use subtle::ConstantTimeEq;
-use typenum::{generic_const_mappings::U, IsGreaterOrEqual, IsLessOrEqual, U16};
+use typenum::{GrEq, IsGreaterOrEqual, IsLessOrEqual, LeEq, NonZero, Unsigned, U12, U16, U4};
 
 /// An error returned by [`GcmSst`].
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Error;
 
+impl error::Error for Error {}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("AES-GCM-SST error")
-    }
-}
-
-/// TODO
-pub trait IntoGenerator {
-    /// TODO
-    type Generator;
-
-    /// TODO
-    fn into_generator(self) -> Self::Generator;
-}
-
-impl<G: Generator> IntoGenerator for G {
-    type Generator = Self;
-
-    #[inline]
-    fn into_generator(self) -> Self::Generator {
-        self
+        write!(f, "GCM-SST error")
     }
 }
 
@@ -43,64 +27,63 @@ pub trait Generator {
 
 /// A stream of pseudorandom bytes.
 pub trait Keystream: Sized {
-    /// Returns the next keystream block.
-    fn next(&mut self) -> [u8; 16];
+    /// Applies the keystream to `buf`.
+    fn try_apply(&mut self, buf: InOutBuf<'_, '_, u8>) -> Result<(), Error>;
+}
 
-    /// Applies the remainder of the keystream to `buf`.
-    fn apply(mut self, buf: InOutBuf<'_, '_, u8>) {
-        let (mut head, mut tail) = buf.into_chunks::<U16>();
-        for chunk in head.get_out() {
-            let block = self.next();
-            for (z, x) in chunk.iter_mut().zip(block.iter()) {
-                *z ^= x;
-            }
-        }
-        if !tail.is_empty() {
-            let block = self.next();
-            for (z, x) in tail.get_out().iter_mut().zip(block.iter()) {
-                *z ^= x;
-            }
-        }
+trait KeystreamExt: Keystream {
+    /// Returns the next keystream block.
+    #[inline]
+    fn next(&mut self) -> Result<[u8; 16], Error> {
+        let mut block = [0; 16];
+        self.try_apply(InOutBuf::from(&mut block[..]))?;
+        Ok(block)
     }
 }
 
-/// TODO
-pub const NONCE_SIZE: usize = 12;
+impl<S: Keystream> KeystreamExt for S {}
 
-/// TODO
-pub type NonceSize = U<{ NONCE_SIZE }>;
+/// The size in octets of a GCM-SST nonce.
+pub const NONCE_SIZE: usize = NonceSize::USIZE;
+
+/// The size in octets of a GCM-SST nonce.
+pub type NonceSize = U12;
 
 /// The nonce used by GCM-SST.
 pub type Nonce = GenericArray<u8, NonceSize>;
 
-/// An authentication tag.
+/// A GCM-SST authentication tag.
 pub type Tag<N> = GenericArray<u8, N>;
 
-/// TODO
-pub const MAX_TAG_SIZE: usize = 16;
+/// The maximum size in octets of a GCM-SST authentication tag.
+pub const MAX_TAG_SIZE: usize = MaxTagSize::USIZE;
 
-/// TODO
-pub type MaxTagSize = U<{ MAX_TAG_SIZE }>;
+/// The maximum size in octets of a GCM-SST authentication tag.
+pub type MaxTagSize = U16;
 
-/// TODO
-pub const MIN_TAG_SIZE: usize = 16;
+/// The minimum size in octets of a GCM-SST authentication tag.
+pub const MIN_TAG_SIZE: usize = MinTagSize::USIZE;
 
-/// TODO
-pub type MinTagSize = U<{ MIN_TAG_SIZE }>;
+/// The minimum size in octets of a GCM-SST authentication tag.
+pub type MinTagSize = U4;
 
-/// A cipher using GCM-SST mode.
+const P_MAX: u64 = u64::MAX / 8;
+const C_MAX: u64 = u64::MAX / 8;
+const A_MAX: u64 = u64::MAX / 8;
+
+/// GCM-SST AEAD.
 #[derive(Debug)]
 pub struct GcmSst<G, T> {
     generator: G,
-    _tag: PhantomData<T>,
+    _marker: PhantomData<(G, T)>,
 }
 
 impl<G, T> GcmSst<G, T> {
     /// Creates a new instance of GCM-SST.
-    pub const fn new(generator: G) -> Self {
+    pub fn new(generator: G) -> Self {
         Self {
             generator,
-            _tag: PhantomData,
+            _marker: PhantomData,
         }
     }
 }
@@ -109,9 +92,9 @@ impl<G, T> GcmSst<G, T>
 where
     G: Generator,
     T: ArrayLength<u8> + IsGreaterOrEqual<MinTagSize> + IsLessOrEqual<MaxTagSize>,
+    GrEq<T, MinTagSize>: NonZero,
+    LeEq<T, MaxTagSize>: NonZero,
 {
-    const TAG_SIZE: usize = T::USIZE;
-
     /// Encrypts and authenticates `plaintext`, authenticates
     /// `additional_data`, and writes the result to `dst`.
     ///
@@ -149,51 +132,35 @@ where
         mut buf: InOutBuf<'_, '_, u8>,
         ad: &[u8],
     ) -> Result<Tag<T>, Error> {
+        if !u64::try_from(buf.len()).is_ok_and(|n| n <= P_MAX)
+            || !u64::try_from(ad.len()).is_ok_and(|n| n <= A_MAX)
+        {
+            return Err(Error);
+        }
+
         // Initiate keystream generator with K and N
         let mut ks = self.generator.init(nonce);
 
         // Let H = Z[0], Q = Z[1], M = Z[2]
-        let h = ks.next();
-        let q = ks.next();
-        let m = ks.next();
+        let h = ks.next()?;
+        let q = ks.next()?;
+        let m = ks.next()?;
 
         // Let ct = P ⊕ truncate(Z[3:n + 2], len(P))
-        ks.apply(buf.reborrow());
+        ks.try_apply(buf.reborrow())?;
         let ct = buf.get_out();
 
         // Let tag = truncate(full_tag, tag_length)
         let tag = {
-            // Let full_tag = POLYVAL(Q, X ⊕ L) ⊕ M
-            let full_tag = {
-                // Let S = zeropad(A) || zeropad(ct)
-                // Let X = POLYVAL(H, S[0], S[1], ...)
-                let x = {
-                    let mut poly = Polyval::<Lite>::new(&PolyKey::new_unchecked(&h.into()));
-                    poly.update_padded(ad); // zeropad(A)
-                    poly.update_padded(ct); // zeropad(ct)
-                    u128::from_le_bytes(poly.tag().into())
-                };
-
-                // Let L = LE64(len(ct)) || LE64(len(A))
-                let l = {
-                    let mut chunk = [0; 16];
-                    let (ct_len, ad_len) = chunk.split_at_mut(8);
-                    ct_len.copy_from_slice(&(ct.len() as u64 * 8).to_le_bytes()); // LE64(len(ct))
-                    ad_len.copy_from_slice(&(ad.len() as u64 * 8).to_le_bytes()); // LE64(len(A))
-                    u128::from_le_bytes(chunk)
-                };
-
-                let poly = {
-                    let mut poly = Polyval::<Lite>::new(&PolyKey::new_unchecked(&q.into()));
-                    poly.update_block(&(x ^ l).to_le_bytes());
-                    u128::from_le_bytes(poly.tag().into())
-                };
-                poly ^ u128::from_le_bytes(m)
-            };
+            let full_tag = self.compute_tag(&h, &q, &m, ct, ad);
 
             // Let tag = truncate(full_tag, tag_length)
             let mut tag = Tag::default();
-            tag.copy_from_slice(&full_tag.to_le_bytes()[..Self::TAG_SIZE]);
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "The compiler can prove that `T::USIZE` is in bounds"
+            )]
+            tag.copy_from_slice(&full_tag[..T::USIZE]);
             tag
         };
 
@@ -206,7 +173,8 @@ where
     ///
     /// # Requirements
     ///
-    /// - `dst` must be at least as long as `ciphertext`.
+    /// - `dst` must be at least as long as `ciphertext`, less
+    ///    the tag length.
     #[inline]
     pub fn open(
         &self,
@@ -241,54 +209,74 @@ where
         tag: &Tag<T>,
         ad: &[u8],
     ) -> Result<(), Error> {
-        let ct = buf.get_in();
+        if !u64::try_from(buf.len()).is_ok_and(|n| n <= C_MAX)
+            || !u64::try_from(ad.len()).is_ok_and(|n| n <= A_MAX)
+        {
+            return Err(Error);
+        }
 
+        let ct = buf.get_in();
         let mut ks = self.generator.init(nonce);
 
         // Let H = Z[0], Q = Z[1], M = Z[2]
-        let h = ks.next();
-        let q = ks.next();
-        let m = ks.next();
+        let h = ks.next()?;
+        let q = ks.next()?;
+        let m = ks.next()?;
 
-        // Let S = zeropad(A) || zeropad(ct) || LE64(len(ct)) || LE64(len(A))
-        //
-        // Let full_tag = POLYVAL(Q, X XOR S[m + n]) XOR M
-        let full_tag = {
-            // Let X = POLYVAL(H, S[0], S[1], ..., S[m + n - 1])
-            let x = {
-                let mut poly =
-                    Polyval::<Lite>::new(&PolyKey::new(&h.into()).assume("`h` is non-zero")?);
-                poly.update_padded(ad); // zeropad(A)
-                poly.update_padded(ct); // zeropad(ct)
-                u128::from_le_bytes(poly.tag().into())
-            };
+        let full_tag = self.compute_tag(&h, &q, &m, ct, ad);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "The compiler can prove that `T::USIZE` is in bounds"
+        )]
+        let expected_tag = &full_tag[..T::USIZE];
 
-            let s_m_n = {
-                let mut chunk = [0; 16];
-                let (ct_len, ad_len) = chunk.split_at_mut(8);
-                ct_len.copy_from_slice(&(ct.len() as u64 * 8).to_le_bytes()); // LE64(len(ct))
-                ad_len.copy_from_slice(&(ad.len() as u64 * 8).to_le_bytes()); // LE64(len(A))
-                u128::from_le_bytes(chunk)
-            };
-
-            let poly = {
-                let mut poly =
-                    Polyval::<Lite>::new(&PolyKey::new(&q.into()).assume("`q` is non-zero")?);
-                poly.update_block(&(x ^ s_m_n).to_le_bytes());
-                u128::from_le_bytes(poly.tag().into())
-            };
-            poly ^ u128::from_le_bytes(m)
-        };
         // Let expected_tag = truncate(full_tag, tag_length)
         // If tag != expected_tag, return error and abort
-        if !bool::from(full_tag.to_le_bytes()[..Self::TAG_SIZE].ct_eq(tag)) {
+        if !bool::from(expected_tag.ct_eq(tag)) {
             return Err(Error);
         }
 
         // Let P = ct XOR truncate(Z[3:n + 2], len(ct))
-        ks.apply(buf);
+        ks.try_apply(buf)?;
 
         Ok(())
+    }
+
+    fn compute_tag(
+        &self,
+        h: &[u8; 16],
+        q: &[u8; 16],
+        m: &[u8; 16],
+        ct: &[u8],
+        ad: &[u8],
+    ) -> [u8; 16] {
+        // Let S = zeropad(A) || zeropad(ct) || LE64(len(ct)) || LE64(len(A))
+        //
+        // Let X = POLYVAL(H, S[0], S[1], ..., S[m + n - 1])
+        let x = {
+            let mut poly = Polyval::<Lite>::new(&PolyKey::new_unchecked(h));
+            poly.update_padded(ad); // zeropad(A)
+            poly.update_padded(ct); // zeropad(ct)
+            poly.tag().into()
+        };
+
+        // Let L = LE64(len(ct)) || LE64(len(A))
+        let l = {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "`encrypt` and `decrypt` check the length of `ct` and `ad`"
+            )]
+            let chunk = ((ct.len() as u128) * 8) | ((ad.len() as u128) * 8) << 64;
+            chunk.to_le_bytes()
+        };
+
+        // Let full_tag = POLYVAL(Q, X XOR S[m + n]) XOR M
+        let poly = {
+            let mut poly = Polyval::<Lite>::new(&PolyKey::new_unchecked(q));
+            poly.update_block(&xor(x, l));
+            poly.tag().into()
+        };
+        xor(poly, *m)
     }
 }
 
@@ -299,57 +287,15 @@ where
     fn clone(&self) -> Self {
         Self {
             generator: self.generator.clone(),
-            _tag: PhantomData,
+            _marker: PhantomData,
         }
     }
 }
 
-impl From<Bug> for Error {
-    fn from(_err: Bug) -> Self {
-        Self
-    }
-}
-
-#[derive(Debug)]
-struct Bug;
-
-impl Bug {
-    #[cold]
-    #[track_caller]
-    fn new(_msg: &'static str) -> Self {
-        #[cfg(not(debug_assertions))]
-        {
-            Self
-        }
-        #[cfg(debug_assertions)]
-        {
-            unreachable!("{_msg}");
-        }
-    }
-}
-
-trait BugExt<T> {
-    fn assume(self, msg: &'static str) -> Result<T, Bug>;
-}
-
-impl<T> BugExt<T> for Option<T> {
-    #[inline]
-    #[track_caller]
-    fn assume(self, msg: &'static str) -> Result<T, Bug> {
-        match self {
-            Some(v) => Ok(v),
-            None => Err(Bug::new(msg)),
-        }
-    }
-}
-
-impl<T, E> BugExt<T> for Result<T, E> {
-    #[inline]
-    #[track_caller]
-    fn assume(self, msg: &'static str) -> Result<T, Bug> {
-        match self {
-            Ok(v) => Ok(v),
-            Err(_) => Err(Bug::new(msg)),
-        }
-    }
+#[inline(always)]
+const fn xor(a: [u8; 16], b: [u8; 16]) -> [u8; 16] {
+    // This appears to generate much better assembly than the
+    // obvious iterator loop.
+    let c = u128::from_ne_bytes(a) ^ u128::from_ne_bytes(b);
+    c.to_ne_bytes()
 }

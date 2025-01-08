@@ -7,16 +7,59 @@
 
 mod tests;
 
-pub use aead::{AeadCore, AeadInPlace, KeyInit, Nonce};
+use core::{error, fmt};
+
+pub use aead::{AeadCore, AeadInPlace, Key, KeyInit, KeySizeUser};
 use aes::{Aes128, Aes256};
-pub use cipher::{
-    crypto_common::{InnerUser, KeySizeUser},
-    Key,
-};
-use ctr::flavors;
-pub use gcm_sst::Error;
-use gcm_sst::{CtrGen, GcmSst, NonceSize, NONCE_SIZE};
-use typenum::generic_const_mappings::U;
+pub use cipher::crypto_common::InnerUser;
+use ctr::flavors::Ctr32BE;
+use gcm_sst::{typenum::generic_const_mappings::U, CtrGen, GcmSst, NonceSize, NONCE_SIZE};
+
+/// An AES-GCM-SST error.
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Error;
+
+impl error::Error for Error {}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "AES-GCM-SST error")
+    }
+}
+
+impl From<Error> for gcm_sst::Error {
+    #[inline]
+    fn from(_: Error) -> Self {
+        Self
+    }
+}
+
+impl From<gcm_sst::Error> for Error {
+    #[inline]
+    fn from(_: gcm_sst::Error) -> Self {
+        Self
+    }
+}
+
+impl From<Error> for aead::Error {
+    #[inline]
+    fn from(_: Error) -> Self {
+        Self
+    }
+}
+
+impl From<aead::Error> for Error {
+    #[inline]
+    fn from(_: aead::Error) -> Self {
+        Self
+    }
+}
+
+/// An AES-GCM-SST nonce.
+pub type Nonce = [u8; NONCE_SIZE];
+
+/// An AES-GCM-SST authentication tag.
+pub type Tag<const N: usize> = [u8; N];
 
 macro_rules! aead_impl {
     (
@@ -24,48 +67,153 @@ macro_rules! aead_impl {
         $aes:ty,
         $p_max:expr,
         $tag_bits:literal,
-        $aes_doc:literal,
-        $tag_doc:literal $(,)?
+        $aes_bits:literal,
+        $tag_octets:literal $(,)?
     ) => {
-        #[doc = concat!("AES-", stringify!(aes_doc), "-GCM-SST")]
+        #[doc = concat!("AES-", stringify!($aes_bits), "-GCM-SST")]
         #[doc = "with"]
-        #[doc = $tag_doc]
-        #[doc = "authentication tag."]
+        #[doc = $tag_octets]
+        #[doc = " octet"]
+        #[doc = concat!("(", stringify!($tag_bits))]
+        #[doc = "bit) authentication tag."]
         #[derive(Clone, Debug)]
-        pub struct $name(AesGcmSst<$aes, U<{ $tag_bits / 8 }>>);
+        pub struct $name(GcmSst<CtrGen<$aes, Ctr32BE>, U<{ $tag_bits / 8 }>>);
 
         impl $name {
-            /// The maximum size in octets of a plaintext.
+            /// The maximum allowed size in octets of
+            /// a plaintext.
             pub const P_MAX: u64 = $p_max;
-            /// The maximum size in octets of a ciphertext.
+            /// The maximum allowed size in octets of
+            /// a ciphertext.
             pub const C_MAX: u64 = match Self::P_MAX.checked_add(Self::TAG_SIZE as u64) {
                 Some(n) => n,
                 None => unreachable!(),
             };
-            /// The maximum size in octets of additional
+            /// The maximum allowed size in octets of additional
             /// authenticated data.
             pub const A_MAX: u64 = Self::P_MAX;
+            /// The size in octets of a key.
+            pub const KEY_SIZE: usize = $aes_bits / 8;
             /// The size in octets of a nonce.
             pub const NONCE_SIZE: usize = NONCE_SIZE;
             /// The size in octets of a tag.
             pub const TAG_SIZE: usize = $tag_bits / 8;
 
             /// Creates a new instance of AES-GCM-SST.
-            pub fn new(key: &Key<$aes>) -> Self {
-                let cipher = <$aes>::new(key);
-                let generator = CtrGen::new(cipher);
+            #[inline]
+            pub fn new(key: &[u8; $aes_bits / 8]) -> Self {
+                let generator = KeyInit::new(key.into());
                 Self(GcmSst::new(generator))
+            }
+
+            /// Encrypts and authenticates `plaintext`,
+            /// authenticates `additional_data`, and writes the
+            /// result to `dst`.
+            ///
+            /// # Requirements
+            ///
+            /// - `dst` must be at least as long as `plaintext`.
+            #[inline]
+            pub fn seal(
+                &self,
+                dst: &mut [u8],
+                nonce: &Nonce,
+                plaintext: &[u8],
+                additional_data: &[u8],
+            ) -> Result<Tag<{ Self::TAG_SIZE }>, Error> {
+                if dst.len() < plaintext.len()
+                    || !u64::try_from(plaintext.len()).is_ok_and(|n| n <= Self::P_MAX)
+                    || !u64::try_from(additional_data.len()).is_ok_and(|n| n <= Self::A_MAX)
+                {
+                    Err(Error)
+                } else {
+                    self.0
+                        .seal(dst, nonce.into(), plaintext, additional_data)
+                        .map(Into::into)
+                        .map_err(Into::into)
+                }
+            }
+
+            /// Encrypts and authenticates `data` in place and
+            /// authenticates `additional_data`.
+            #[inline]
+            pub fn seal_in_place(
+                &self,
+                nonce: &Nonce,
+                data: &mut [u8],
+                additional_data: &[u8],
+            ) -> Result<Tag<{ Self::TAG_SIZE }>, Error> {
+                if !u64::try_from(data.len()).is_ok_and(|n| n <= Self::P_MAX)
+                    || !u64::try_from(additional_data.len()).is_ok_and(|n| n <= Self::A_MAX)
+                {
+                    Err(Error)
+                } else {
+                    self.0
+                        .seal_in_place(nonce.into(), data, additional_data)
+                        .map(Into::into)
+                        .map_err(Into::into)
+                }
+            }
+
+            /// Decrypts and authenticates `plaintext`,
+            /// authenticates `additional_data`, and writes the
+            /// result to `dst`.
+            ///
+            /// # Requirements
+            ///
+            /// - `dst` must be at least as long as `ciphertext`,
+            ///   less the tag length.
+            #[inline]
+            pub fn open(
+                &self,
+                dst: &mut [u8],
+                nonce: &Nonce,
+                ciphertext: &[u8],
+                tag: &Tag<{ Self::TAG_SIZE }>,
+                additional_data: &[u8],
+            ) -> Result<(), Error> {
+                if dst.len() < ciphertext.len()
+                    || !u64::try_from(ciphertext.len()).is_ok_and(|n| n <= Self::C_MAX)
+                    || !u64::try_from(additional_data.len()).is_ok_and(|n| n <= Self::A_MAX)
+                {
+                    Err(Error)
+                } else {
+                    self.0
+                        .open(dst, nonce.into(), ciphertext, tag.into(), additional_data)
+                        .map_err(Into::into)
+                }
+            }
+
+            /// Decrypts and authenticates `plaintext` in place
+            /// and authenticates `additional_data`.
+            #[inline]
+            pub fn open_in_place(
+                &self,
+                nonce: &Nonce,
+                data: &mut [u8],
+                tag: &Tag<{ Self::TAG_SIZE }>,
+                additional_data: &[u8],
+            ) -> Result<(), Error> {
+                if !u64::try_from(data.len()).is_ok_and(|n| n <= Self::C_MAX)
+                    || !u64::try_from(additional_data.len()).is_ok_and(|n| n <= Self::A_MAX)
+                {
+                    Err(Error)
+                } else {
+                    self.0
+                        .open_in_place(nonce.into(), data, tag.into(), additional_data)
+                        .map_err(Into::into)
+                }
             }
         }
 
         impl InnerUser for $name {
-            type Inner = AesGcmSst<$aes, <Self as AeadCore>::TagSize>;
+            type Inner = GcmSst<CtrGen<$aes, Ctr32BE>, <Self as AeadCore>::TagSize>;
         }
 
         impl KeyInit for $name {
             #[inline]
             fn new(key: &Key<$aes>) -> Self {
-                Self::new(key)
+                Self::new(key.as_ref())
             }
         }
 
@@ -76,108 +224,50 @@ macro_rules! aead_impl {
         }
 
         impl AeadInPlace for $name {
+            //#[inline]
             fn encrypt_in_place_detached(
                 &self,
-                nonce: &Nonce<Self>,
+                nonce: &aead::Nonce<Self>,
                 associated_data: &[u8],
                 buffer: &mut [u8],
             ) -> aead::Result<aead::Tag<Self>> {
-                if u64::try_from(buffer.len()).is_ok_and(|n| n <= Self::P_MAX)
-                    && u64::try_from(associated_data.len()).is_ok_and(|n| n <= Self::A_MAX)
-                {
-                    self.0
-                        .encrypt_in_place_detached(nonce, associated_data, buffer)
-                } else {
-                    Err(aead::Error)
-                }
+                self.seal_in_place(nonce.as_ref(), buffer, associated_data)
+                    .map(Into::into)
+                    .map_err(Into::into)
             }
 
+            //#[inline]
             fn decrypt_in_place_detached(
                 &self,
-                nonce: &Nonce<Self>,
+                nonce: &aead::Nonce<Self>,
                 associated_data: &[u8],
                 buffer: &mut [u8],
                 tag: &aead::Tag<Self>,
             ) -> aead::Result<()> {
-                if u64::try_from(buffer.len()).is_ok_and(|n| n <= Self::P_MAX)
-                    && u64::try_from(associated_data.len()).is_ok_and(|n| n <= Self::A_MAX)
-                {
-                    self.0
-                        .decrypt_in_place_detached(nonce, associated_data, buffer, tag)
-                } else {
-                    Err(aead::Error)
-                }
+                self.open_in_place(nonce.as_ref(), buffer, tag.as_ref(), associated_data)
+                    .map_err(Into::into)
             }
         }
     };
 }
 pub(crate) use aead_impl;
 
-aead_impl!(
-    AesGcm128Sst4,
-    Aes128,
-    (1 << 36) - 48,
-    32,
-    "128",
-    "a four octet (32 bit)"
-);
-aead_impl!(
-    AesGcm128Sst8,
-    Aes128,
-    (1 << 36) - 48,
-    64,
-    "128",
-    "an eight octet (64 bit)"
-);
-aead_impl!(
-    AesGcm128Sst12,
-    Aes128,
-    1 << 35,
-    96,
-    "128",
-    "a twelve octet (96 bit)"
-);
-aead_impl!(
-    AesGcm128Sst14,
-    Aes128,
-    1 << 19,
-    112,
-    "128",
-    "a fourteen octet (112 bit)"
-);
+aead_impl!(Aes128GcmSst4, Aes128, (1 << 36) - 48, 32, 128, "a four");
+aead_impl!(Aes128GcmSst8, Aes128, (1 << 36) - 48, 64, 128, "an eight");
+aead_impl!(Aes128GcmSst12, Aes128, 1 << 35, 96, 128, "a twelve");
+aead_impl!(Aes128GcmSst14, Aes128, 1 << 19, 112, 128, "a fourteen");
 
-aead_impl!(
-    AesGcm256Sst4,
-    Aes256,
-    (1 << 36) - 48,
-    32,
-    "256",
-    "a four octet (32 bit)"
-);
-aead_impl!(
-    AesGcm256Sst8,
-    Aes256,
-    (1 << 36) - 48,
-    64,
-    "256",
-    "an eight octet (64 bit)"
-);
-aead_impl!(
-    AesGcm256Sst12,
-    Aes256,
-    1 << 35,
-    96,
-    "256",
-    "a twelve octet (96 bit)"
-);
-aead_impl!(
-    AesGcm256Sst14,
-    Aes256,
-    1 << 19,
-    112,
-    "256",
-    "a fourteen octet (112 bit)"
-);
+aead_impl!(Aes256GcmSst4, Aes256, (1 << 36) - 48, 32, 256, "a four");
+aead_impl!(Aes256GcmSst8, Aes256, (1 << 36) - 48, 64, 256, "an eight");
+aead_impl!(Aes256GcmSst12, Aes256, 1 << 35, 96, 256, "a twelve");
+aead_impl!(Aes256GcmSst14, Aes256, 1 << 19, 112, 256, "a fourteen");
 
-type Ctr32BE<A> = CtrGen<A, flavors::Ctr32BE>;
-type AesGcmSst<A, T> = GcmSst<Ctr32BE<A>, T>;
+pub fn xor(a: [u8; 16], b: [u8; 16]) -> [u8; 16] {
+    //(u128::from_le_bytes(a) ^ u128::from_le_bytes(b)).to_le_bytes()
+
+    let mut out = [0; 16];
+    for ((z, x), y) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
+        *z = x ^ y;
+    }
+    out
+}

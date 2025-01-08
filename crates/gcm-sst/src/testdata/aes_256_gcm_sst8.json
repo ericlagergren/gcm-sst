@@ -1,0 +1,51 @@
+{
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "nonce": "303132333435363738393a3b",
+    "cases": [
+        {
+            "name": "3a",
+            "aad": "",
+            "plaintext": "",
+            "encode_len": "00000000000000000000000000000000",
+            "full_tag": "b33531c0e96f4a032a338eec12993e68",
+            "tag": "b33531c0e96f4a03",
+            "ciphertext": ""
+        },
+        {
+            "name": "3b",
+            "aad": "4041424344",
+            "plaintext": "",
+            "encode_len": "00000000000000002800000000000000",
+            "full_tag": "63acca4d209fb39028ffc31704016761",
+            "tag": "63acca4d209fb390",
+            "ciphertext": ""
+        },
+        {
+            "name": "3c",
+            "aad": "",
+            "plaintext": "606162636465666768696a6b",
+            "encode_len": "60000000000000000000000000000000",
+            "full_tag": "e1debffd5f3a85e348bd6fcc6e621090",
+            "tag": "e1debffd5f3a85e3",
+            "ciphertext": "fc462d34a75b22624fd73b27"
+        },
+        {
+            "name": "3d",
+            "aad": "404142434445464748494a4b4c4d4e4f",
+            "plaintext": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e",
+            "encode_len": "f8000000000000008000000000000000",
+            "full_tag": "c35ed7839f21f7bba5a8a28e1f49ed04",
+            "tag": "c35ed7839f21f7bb",
+            "ciphertext": "fc462d34a75b22624fd73b2784de105133117e1758b5edd0d65d683206bbad"
+        },
+        {
+            "name": "3e",
+            "aad": "404142434445464748494a4b4c4d4e",
+            "plaintext": "606162636465666768696a6b6c6d6e6f70",
+            "encode_len": "88000000000000780000000000000000",
+            "full_tag": "497c147767a53d5764cefd0326fee7b5",
+            "tag": "497c147767a53d57",
+            "ciphertext": "fc462d34a75b22624fd73b2784de105133"
+        }
+    ]
+}
