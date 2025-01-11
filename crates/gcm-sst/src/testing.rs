@@ -9,7 +9,7 @@ use aead::AeadInPlace;
 use cipher::KeyInit;
 use serde::Deserialize;
 
-use crate::{Nonce, NonceSize};
+use crate::rust_crypto::NonceSize;
 
 /// Test cases.
 #[derive(Deserialize)]
@@ -40,7 +40,7 @@ pub fn run_tests<A>(tests: &TestCases)
 where
     A: KeyInit + AeadInPlace<NonceSize = NonceSize>,
 {
-    let nonce = Nonce::from_slice(&tests.nonce);
+    let nonce = tests.nonce.as_slice().try_into().unwrap();
     for test in tests.cases.iter() {
         let aead = A::new_from_slice(&tests.key).unwrap();
 

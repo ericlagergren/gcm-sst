@@ -17,13 +17,16 @@ categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
 workspace = true
 
 [features]
-default = []
+default = [
+	"zeroize",
+]
 
 # Enable allocations.
 alloc = [
 	"aead?/alloc",
 	"cipher?/alloc",
 	"ctr?/alloc",
+	"zeroize/alloc",
 ]
 
 # Enable Rust Crypto integration.
@@ -49,6 +52,17 @@ std = [
 	"aead?/std",
 	"cipher?/std",
 	"ctr?/std",
+	"inout/std",
+	"polyhash/std",
+	"zeroize/std",
+]
+
+zeroize = [
+	"dep:zeroize",
+
+	"cipher/zeroize",
+	"ctr/zeroize",
+	"polyhash/zeroize",
 ]
 
 [dependencies]
@@ -56,13 +70,12 @@ aead = { version = "0.5", default-features = false, optional = true }
 cipher = { version = "0.4", default-features = false, optional = true }
 crypto-common = { version = "0.1" }
 ctr = { version = "0.9", default-features = false, optional = true }
-generic-array = { workspace = true }
 inout = { version = "0.1" }
 #polyhash = { version = "0.2" }
 polyhash = { path = "/Users/eric/git/polyval-rs" }
 subtle = { workspace = true }
-typenum = { workspace = true }
-zeroize = { version = "1.8", default-features = false }
+typenum = { workspace = true, default-features = false, features = ["const-generics"] }
+zeroize = { version = "1.8", default-features = false, optional = true }
 
 # Used by the `testing` feature.
 hex = { version = "0.4", features = ["serde"], optional = true }

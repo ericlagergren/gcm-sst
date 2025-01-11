@@ -7,59 +7,14 @@
 
 mod tests;
 
-use core::{error, fmt};
-
 pub use aead::{AeadCore, AeadInPlace, Key, KeyInit, KeySizeUser};
 use aes::{Aes128, Aes256};
 pub use cipher::crypto_common::InnerUser;
 use ctr::flavors::Ctr32BE;
-use gcm_sst::{typenum::generic_const_mappings::U, CtrGen, GcmSst, NonceSize, NONCE_SIZE};
+use gcm_sst::{rust_crypto::CtrGen, GcmSst};
+pub use gcm_sst::{Error, Nonce, Tag, MAX_TAG_SIZE, MIN_TAG_SIZE, NONCE_SIZE};
 
-/// An AES-GCM-SST error.
-#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct Error;
-
-impl error::Error for Error {}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "AES-GCM-SST error")
-    }
-}
-
-impl From<Error> for gcm_sst::Error {
-    #[inline]
-    fn from(_: Error) -> Self {
-        Self
-    }
-}
-
-impl From<gcm_sst::Error> for Error {
-    #[inline]
-    fn from(_: gcm_sst::Error) -> Self {
-        Self
-    }
-}
-
-impl From<Error> for aead::Error {
-    #[inline]
-    fn from(_: Error) -> Self {
-        Self
-    }
-}
-
-impl From<aead::Error> for Error {
-    #[inline]
-    fn from(_: aead::Error) -> Self {
-        Self
-    }
-}
-
-/// An AES-GCM-SST nonce.
-pub type Nonce = [u8; NONCE_SIZE];
-
-/// An AES-GCM-SST authentication tag.
-pub type Tag<const N: usize> = [u8; N];
+type AesGcmSst<A, const T: usize> = GcmSst<CtrGen<A, Ctr32BE>, T>;
 
 macro_rules! aead_impl {
     (
@@ -77,7 +32,7 @@ macro_rules! aead_impl {
         #[doc = concat!("(", stringify!($tag_bits))]
         #[doc = "bit) authentication tag."]
         #[derive(Clone, Debug)]
-        pub struct $name(GcmSst<CtrGen<$aes, Ctr32BE>, U<{ $tag_bits / 8 }>>);
+        pub struct $name(AesGcmSst<$aes, { $tag_bits / 8 }>);
 
         impl $name {
             /// The maximum allowed size in octets of
@@ -122,15 +77,12 @@ macro_rules! aead_impl {
                 additional_data: &[u8],
             ) -> Result<Tag<{ Self::TAG_SIZE }>, Error> {
                 if dst.len() < plaintext.len()
-                    || !u64::try_from(plaintext.len()).is_ok_and(|n| n <= Self::P_MAX)
-                    || !u64::try_from(additional_data.len()).is_ok_and(|n| n <= Self::A_MAX)
+                    || !less_or_equal(plaintext.len(), Self::P_MAX)
+                    || !less_or_equal(additional_data.len(), Self::A_MAX)
                 {
                     Err(Error)
                 } else {
-                    self.0
-                        .seal(dst, nonce.into(), plaintext, additional_data)
-                        .map(Into::into)
-                        .map_err(Into::into)
+                    self.0.seal(dst, nonce.into(), plaintext, additional_data)
                 }
             }
 
@@ -143,15 +95,12 @@ macro_rules! aead_impl {
                 data: &mut [u8],
                 additional_data: &[u8],
             ) -> Result<Tag<{ Self::TAG_SIZE }>, Error> {
-                if !u64::try_from(data.len()).is_ok_and(|n| n <= Self::P_MAX)
-                    || !u64::try_from(additional_data.len()).is_ok_and(|n| n <= Self::A_MAX)
+                if !less_or_equal(data.len(), Self::P_MAX)
+                    || !less_or_equal(additional_data.len(), Self::A_MAX)
                 {
                     Err(Error)
                 } else {
-                    self.0
-                        .seal_in_place(nonce.into(), data, additional_data)
-                        .map(Into::into)
-                        .map_err(Into::into)
+                    self.0.seal_in_place(nonce.into(), data, additional_data)
                 }
             }
 
@@ -173,14 +122,13 @@ macro_rules! aead_impl {
                 additional_data: &[u8],
             ) -> Result<(), Error> {
                 if dst.len() < ciphertext.len()
-                    || !u64::try_from(ciphertext.len()).is_ok_and(|n| n <= Self::C_MAX)
-                    || !u64::try_from(additional_data.len()).is_ok_and(|n| n <= Self::A_MAX)
+                    || !less_or_equal(ciphertext.len(), Self::C_MAX)
+                    || !less_or_equal(additional_data.len(), Self::A_MAX)
                 {
                     Err(Error)
                 } else {
                     self.0
-                        .open(dst, nonce.into(), ciphertext, tag.into(), additional_data)
-                        .map_err(Into::into)
+                        .open(dst, nonce.into(), ciphertext, tag, additional_data)
                 }
             }
 
@@ -194,20 +142,19 @@ macro_rules! aead_impl {
                 tag: &Tag<{ Self::TAG_SIZE }>,
                 additional_data: &[u8],
             ) -> Result<(), Error> {
-                if !u64::try_from(data.len()).is_ok_and(|n| n <= Self::C_MAX)
-                    || !u64::try_from(additional_data.len()).is_ok_and(|n| n <= Self::A_MAX)
+                if !less_or_equal(data.len(), Self::C_MAX)
+                    || !less_or_equal(additional_data.len(), Self::A_MAX)
                 {
                     Err(Error)
                 } else {
                     self.0
-                        .open_in_place(nonce.into(), data, tag.into(), additional_data)
-                        .map_err(Into::into)
+                        .open_in_place(nonce.into(), data, tag, additional_data)
                 }
             }
         }
 
         impl InnerUser for $name {
-            type Inner = GcmSst<CtrGen<$aes, Ctr32BE>, <Self as AeadCore>::TagSize>;
+            type Inner = AesGcmSst<$aes, { Self::TAG_SIZE }>;
         }
 
         impl KeyInit for $name {
@@ -218,9 +165,9 @@ macro_rules! aead_impl {
         }
 
         impl AeadCore for $name {
-            type NonceSize = NonceSize;
-            type TagSize = U<{ Self::TAG_SIZE }>;
-            type CiphertextOverhead = Self::TagSize;
+            type NonceSize = <<Self as InnerUser>::Inner as AeadCore>::NonceSize;
+            type TagSize = <<Self as InnerUser>::Inner as AeadCore>::TagSize;
+            type CiphertextOverhead = <<Self as InnerUser>::Inner as AeadCore>::CiphertextOverhead;
         }
 
         impl AeadInPlace for $name {
@@ -261,6 +208,12 @@ aead_impl!(Aes256GcmSst4, Aes256, (1 << 36) - 48, 32, 256, "a four");
 aead_impl!(Aes256GcmSst8, Aes256, (1 << 36) - 48, 64, 256, "an eight");
 aead_impl!(Aes256GcmSst12, Aes256, 1 << 35, 96, 256, "a twelve");
 aead_impl!(Aes256GcmSst14, Aes256, 1 << 19, 112, 256, "a fourteen");
+
+/// Reports whether `x <= y`.
+#[inline(always)]
+fn less_or_equal(x: usize, y: u64) -> bool {
+    u64::try_from(x).is_ok_and(|n| n <= y)
+}
 
 pub fn xor(a: [u8; 16], b: [u8; 16]) -> [u8; 16] {
     //(u128::from_le_bytes(a) ^ u128::from_le_bytes(b)).to_le_bytes()

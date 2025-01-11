@@ -6,12 +6,9 @@
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 mod gcm;
-mod rust_crypto;
+pub mod rust_crypto;
 pub mod testing;
 mod tests;
 
 pub use gcm::*;
-pub use generic_array;
-#[cfg(feature = "rust-crypto")]
-pub use rust_crypto::CtrGen;
 pub use typenum;

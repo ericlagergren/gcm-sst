@@ -2,7 +2,6 @@
 
 use aes::{Aes128, Aes256};
 use ctr::flavors::Ctr32BE;
-use typenum::{U4, U8};
 
 use crate::{
     rust_crypto::CtrGen,
@@ -10,9 +9,9 @@ use crate::{
     GcmSst,
 };
 
-type Aes128GcmSst4 = GcmSst<CtrGen<Aes128, Ctr32BE>, U4>;
-type Aes128GcmSst8 = GcmSst<CtrGen<Aes128, Ctr32BE>, U8>;
-type Aes256GcmSst8 = GcmSst<CtrGen<Aes256, Ctr32BE>, U8>;
+type Aes128GcmSst4 = GcmSst<CtrGen<Aes128, Ctr32BE>, 4>;
+type Aes128GcmSst8 = GcmSst<CtrGen<Aes128, Ctr32BE>, 8>;
+type Aes256GcmSst8 = GcmSst<CtrGen<Aes256, Ctr32BE>, 8>;
 
 macro_rules! tests {
     ($name:ident, $aead:ty, $tests:ident) => {
