@@ -1,0 +1,15 @@
+{
+    "key": "2923be84e16cd6ae529049f1f1bbe9eb",
+    "nonce": "9a50ee407836fd124932f69e",
+    "cases": [
+        {
+            "name": "1a",
+            "aad": "1f035a7d0938251f5dd4cbfc96f5453b130d",
+            "plaintext": "ad4f14f2444066d06bc430b7323ba122f622919d",
+            "encode_len": "a0000000000000009000000000000000",
+            "full_tag": "4503bfb0968239b367e970c383c5106f",
+            "tag": "4503bfb0968239b3",
+            "ciphertext": "b865d5160783117321f56cb0754516b3da9db809"
+        }
+    ]
+}

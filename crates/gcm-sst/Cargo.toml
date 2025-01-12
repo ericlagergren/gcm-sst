@@ -1,0 +1,95 @@
+[package]
+name = "gcm-sst"
+version = "0.1.0"
+description = """
+TODO
+"""
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+documentation = "https://docs.rs/gcm-sst"
+keywords = [ "gcm", "gcm-sst" ]
+categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
+
+[lints]
+workspace = true
+
+[features]
+default = [
+	#"zeroize",
+]
+
+# Enable allocations.
+alloc = [
+	"aead?/alloc",
+	"cipher?/alloc",
+	"ctr?/alloc",
+	"zeroize?/alloc",
+]
+
+# Enable Rust Crypto integration.
+rust-crypto = [
+	"dep:aead",
+	"dep:cipher",
+	"dep:ctr",
+]
+
+# Internal only, do not use.
+testing = [
+	"std",
+
+	"dep:hex",
+	"dep:serde",
+	"dep:serde_json",
+]
+
+# Enable `std`.
+std = [
+	"alloc",
+
+	"aead?/std",
+	"cipher?/std",
+	"ctr?/std",
+	"inout/std",
+	"polyhash/std",
+	"zeroize?/std",
+]
+
+zeroize = [
+	"dep:zeroize",
+
+	"cipher/zeroize",
+	"ctr/zeroize",
+	"polyhash/zeroize",
+]
+
+[dependencies]
+aead = { workspace = true, default-features = false, optional = true }
+cipher = { workspace = true, default-features = false, optional = true }
+crypto-common = { version = "0.1" }
+ctr = { workspace = true, default-features = false, optional = true }
+inout = { version = "0.1" }
+#polyhash = { version = "0.2" }
+polyhash = { path = "/Users/eric/git/polyval-rs" }
+subtle = { workspace = true }
+typenum = { workspace = true, default-features = false, features = ["const-generics"] }
+zeroize = { workspace = true, default-features = false, optional = true }
+
+# Used by the `testing` feature.
+hex = { version = "0.4", features = ["serde"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+gcm-sst = { path = ".", features = ["rust-crypto", "testing"] }
+
+aes = { workspace = true  }
+ctr = { workspace = true }
+hex = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]

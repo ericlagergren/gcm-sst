@@ -1,0 +1,68 @@
+[package]
+name = "aes-gcm-sst"
+version = "0.1.0"
+description = """
+ TODO
+"""
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+documentation = "https://docs.rs/aes-gcm-sst"
+keywords = [ "aes-gcm", "aes-gcm-sst" ]
+categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
+
+[features]
+default = [
+	#"zeroize",
+]
+
+# Enable allocations.
+alloc = [
+	"aead/alloc",
+	"cipher/alloc",
+	"ctr/alloc",
+	"gcm-sst/alloc",
+	"zeroize?/alloc",
+]
+
+# Enable `std`.
+std = [
+	"alloc",
+
+	"aead/std",
+	"cipher/std",
+	"ctr/std",
+	"gcm-sst/alloc",
+	"zeroize?/std",
+]
+
+zeroize = [
+	"dep:zeroize",
+
+	"cipher/zeroize",
+	"ctr/zeroize",
+	"gcm-sst/zeroize",
+]
+
+[dependencies]
+aead = { workspace = true, default-features = false }
+aes = { workspace = true, default-features = false }
+cipher = { workspace = true, default-features = false }
+ctr = { workspace = true, default-features = false }
+gcm-sst = { version = "0.1.0", path = "../gcm-sst", default-features = false, features = ["rust-crypto"] }
+zeroize = { workspace = true, default-features = false, optional = true }
+
+[dev-dependencies]
+aes-gcm-sst = { path = "." }
+
+criterion = { workspace = true }
+pprof = { workspace = true }
+
+[[bench]]
+name = "lib"
+harness = false
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
