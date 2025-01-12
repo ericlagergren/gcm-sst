@@ -1,4 +1,4 @@
-use core::{error, fmt, marker::PhantomData};
+use core::{error, fmt, marker::PhantomData, ops::BitXor};
 
 use inout::InOutBuf;
 use polyhash::{Key as PolyKey, Lite, Polyval, Precomputed};
@@ -22,16 +22,39 @@ impl fmt::Display for Error {
 
 /// A keystream generator.
 pub trait Generator {
+    /// TODO
+    const NONCE_SIZE: usize;
+    const P_MAX: u64;
+
     /// Uses `nonce` to generate a new keystream.
     fn init(&self, nonce: &Nonce) -> impl Keystream;
 }
 
-/// A stream of pseudorandom bytes.
+/// A stream of cryptographically secure pseudorandom bytes.
 pub trait Keystream: Sized {
-    /// Reads the next `N` keystream bytes.
-    fn next<const N: usize>(&mut self, buf: &mut [u8; N]);
-    /// Applies the remainder of the keystream to `buf`.
-    fn try_apply(self, buf: InOutBuf<'_, '_, u8>) -> Result<(), Error>;
+    /// Returns the number of bytes remaining in the keystream.
+    ///
+    /// It returns `None` if the stream has an unlimited length
+    /// (e.g., sponge constructions) or if the length does not
+    /// fit in `usize`.
+    fn remaining_bytes(&self) -> Option<usize>;
+
+    /// Writes the first 48 keystream bytes to `buf`.
+    ///
+    /// # Note
+    ///
+    /// This method will only be called after checking
+    /// [`remaining_bytes`][Self::remaining_bytes].
+    fn first(&mut self, buf: &mut [u8; 48]);
+
+    /// XORs each byte in the the remainder of the keystream with
+    /// each byte in `buf`.
+    ///
+    /// # Note
+    ///
+    /// This method will only be called after checking
+    /// [`remaining_bytes`][Self::remaining_bytes].
+    fn apply(self, buf: InOutBuf<'_, '_, u8>);
 }
 
 /// The size in octets of a GCM-SST nonce.
@@ -136,13 +159,19 @@ where
         // Initiate keystream generator with K and N
         let mut ks = self.generator.init(nonce);
 
+        // TODO(eric): Provide a reason.
+        #[allow(clippy::arithmetic_side_effects)]
+        if ks.remaining_bytes().is_some_and(|n| n < 48 + buf.len()) {
+            return Err(Error);
+        }
+
         // Let H = Z[0], Q = Z[1], M = Z[2]
-        let (h, q, m) = first_three_blocks(&mut ks)?;
+        let (h, q, m) = subkeys(&mut ks);
 
         // Let ct = P ⊕ truncate(Z[3:n + 2], len(P))
-        ks.try_apply(buf.reborrow())?;
+        ks.apply(buf.reborrow());
 
-        let tag = self.compute_tag(&h, &q, &m, buf.get_out(), ad);
+        let tag = self.compute_tag(h, q, m, buf.get_out(), ad);
 
         // Return (ct, tag)
         Ok(tag)
@@ -197,39 +226,37 @@ where
         // Initiate keystream generator with K and N
         let mut ks = self.generator.init(nonce);
 
+        // TODO(eric): Provide a reason.
+        #[allow(clippy::arithmetic_side_effects)]
+        if ks.remaining_bytes().is_some_and(|n| n < 48 + ct.len()) {
+            return Err(Error);
+        }
+
         // Let H = Z[0], Q = Z[1], M = Z[2]
-        let (h, q, m) = first_three_blocks(&mut ks)?;
+        let (h, q, m) = subkeys(&mut ks);
 
         // Let expected_tag = truncate(full_tag, tag_length)
-        let expected_tag = self.compute_tag(&h, &q, &m, ct, ad);
+        let expected_tag = self.compute_tag(h, q, m, ct, ad);
 
         // If tag != expected_tag, return error and abort
         if !bool::from(expected_tag.ct_eq(tag)) {
             return Err(Error);
         }
 
-        // Let P = ct XOR truncate(Z[3:n + 2], len(ct))
-        ks.try_apply(buf)?;
+        // Let P = ct ⊕ truncate(Z[3:n + 2], len(ct))
+        ks.apply(buf);
 
         Ok(())
     }
 
-    fn compute_tag(
-        &self,
-        h: &[u8; 16],
-        q: &[u8; 16],
-        m: &[u8; 16],
-        ct: &[u8],
-        ad: &[u8],
-    ) -> [u8; T] {
-        // Let S = zeropad(A) || zeropad(ct) || LE64(len(ct)) || LE64(len(A))
-        //
-        // Let X = POLYVAL(H, S[0], S[1], ..., S[m + n - 1])
+    fn compute_tag(&self, h: PolyKey, q: PolyKey, m: Block, ct: &[u8], ad: &[u8]) -> [u8; T] {
+        // Let S = zeropad(A) || zeropad(ct)
+        // Let X = POLYVAL(H, S[0], S[1], ...)
         let x = {
-            let mut poly = Polyval::<Precomputed>::new(&PolyKey::new_unchecked(h));
+            let mut poly = Polyval::<Precomputed>::new(&h);
             poly.update_padded(ad); // zeropad(A)
             poly.update_padded(ct); // zeropad(ct)
-            poly.tag().into()
+            Block::from(poly.tag())
         };
 
         // Let L = LE64(len(ct)) || LE64(len(A))
@@ -239,14 +266,14 @@ where
                 reason = "`encrypt` and `decrypt` check the length of `ct` and `ad`"
             )]
             let chunk = ((ct.len() as u128) * 8) | ((ad.len() as u128) * 8) << 64;
-            chunk.to_le_bytes()
+            Block(chunk)
         };
 
-        // Let full_tag = POLYVAL(Q, X XOR S[m + n]) XOR M
+        // Let full_tag = POLYVAL(Q, X ⊕ L) ⊕ M
         let full_tag = {
-            let mut poly = Polyval::<Lite>::new(&PolyKey::new_unchecked(q));
-            poly.update_block(&xor(x, l));
-            xor(poly.tag().into(), *m)
+            let mut poly = Polyval::<Lite>::new(&q);
+            poly.update_block(&(x ^ l).into_bytes());
+            (Block::from(poly.tag()) ^ m).into_bytes()
         };
 
         // Let tag = truncate(full_tag, tag_length)
@@ -260,14 +287,6 @@ where
     }
 }
 
-#[inline(always)]
-const fn xor(a: [u8; 16], b: [u8; 16]) -> [u8; 16] {
-    // This appears to generate much better assembly than the
-    // obvious iterator loop.
-    let c = u128::from_ne_bytes(a) ^ u128::from_ne_bytes(b);
-    c.to_ne_bytes()
-}
-
 /// Reports whether `x <= y`.
 #[inline(always)]
 fn less_or_equal(x: usize, y: u64) -> bool {
@@ -275,14 +294,43 @@ fn less_or_equal(x: usize, y: u64) -> bool {
 }
 
 #[inline(always)]
-fn first_three_blocks<K: Keystream>(ks: &mut K) -> Result<([u8; 16], [u8; 16], [u8; 16]), Error> {
-    let mut buf = [0; 16 * 3];
-    ks.next(&mut buf);
-    let (h, rest) = buf.split_at(16);
-    let (q, m) = rest.split_at(16);
-    Ok((
-        h.try_into().unwrap(),
-        q.try_into().unwrap(),
-        m.try_into().unwrap(),
-    ))
+#[allow(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    reason = "The compiler can prove that the indexes are in bounds"
+)]
+fn subkeys<K: Keystream>(ks: &mut K) -> (PolyKey, PolyKey, Block) {
+    let mut buf = [0; 48];
+    ks.first(&mut buf);
+
+    let h = PolyKey::new_unchecked(buf[..16].try_into().unwrap());
+    let q = PolyKey::new_unchecked(buf[16..32].try_into().unwrap());
+    let m = Block(u128::from_ne_bytes(buf[32..].try_into().unwrap()));
+
+    (h, q, m)
+}
+
+#[derive(Copy, Clone)]
+struct Block(u128);
+
+impl Block {
+    const fn into_bytes(self) -> [u8; 16] {
+        self.0.to_ne_bytes()
+    }
+}
+
+impl From<polyhash::Tag> for Block {
+    #[inline(always)]
+    fn from(tag: polyhash::Tag) -> Self {
+        Self(u128::from_ne_bytes(tag.into()))
+    }
+}
+
+impl BitXor for Block {
+    type Output = Self;
+
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self {
+        Self(self.0 ^ rhs.0)
+    }
 }

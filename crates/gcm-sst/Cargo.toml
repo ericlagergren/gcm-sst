@@ -18,7 +18,7 @@ workspace = true
 
 [features]
 default = [
-	"zeroize",
+	#"zeroize",
 ]
 
 # Enable allocations.

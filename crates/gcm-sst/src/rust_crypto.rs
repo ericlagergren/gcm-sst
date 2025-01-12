@@ -10,14 +10,13 @@ use core::{fmt, marker::PhantomData, slice};
 pub use aead::generic_array::ArrayLength;
 use aead::{generic_array::GenericArray, AeadCore, AeadInPlace};
 use cipher::{
-    BlockCipher, BlockEncrypt, InnerIvInit, Iv, Key, KeyInit, KeySizeUser, StreamCipher,
-    StreamCipherCore,
+    BlockCipher, BlockEncrypt, InnerIvInit, Iv, Key, KeyInit, KeySizeUser, StreamCipherCore,
 };
 use ctr::{flavors::CtrFlavor, CtrCore};
 use inout::InOutBuf;
 use typenum::{
     generic_const_mappings::{Const, ToUInt, U},
-    GrEq, IsGreaterOrEqual, IsLess, IsLessOrEqual, Le, LeEq, NonZero, Unsigned, U12, U256,
+    GrEq, IsGreaterOrEqual, IsLess, IsLessOrEqual, Le, LeEq, NonZero, Unsigned, U12, U16, U256,
 };
 #[cfg(feature = "zeroize")]
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -41,15 +40,23 @@ impl From<aead::Error> for Error {
     }
 }
 
-impl<S: StreamCipher> Keystream for S {
+impl<S: StreamCipherCore<BlockSize = U16>> Keystream for S {
     #[inline]
-    fn next<const N: usize>(&mut self, buf: &mut [u8; N]) {
-        self.try_apply(InOutBuf::from(&mut buf[..])).unwrap();
+    fn remaining_bytes(&self) -> Option<usize> {
+        let blocks = self.remaining_blocks()?;
+        blocks.checked_mul(S::BlockSize::USIZE)
     }
 
     #[inline]
-    fn try_apply(mut self, buf: InOutBuf<'_, '_, u8>) -> Result<(), Error> {
-        self.try_apply_keystream_inout(buf).map_err(|_| Error)
+    fn first(&mut self, buf: &mut [u8; 48]) {
+        let (blocks, _) = as_chunks_mut::<S::BlockSize>(buf);
+        self.write_keystream_blocks(blocks);
+    }
+
+    #[inline]
+    fn apply(self, buf: InOutBuf<'_, '_, u8>) {
+        let result = self.try_apply_keystream_partial(buf);
+        debug_assert!(result.is_ok());
     }
 }
 
@@ -181,6 +188,8 @@ where
     Le<C::BlockSize, U256>: NonZero,
     F: CtrFlavor<C::BlockSize>,
 {
+    type NonceSize = NonceSize;
+
     #[inline]
     fn init(&self, nonce: &Nonce) -> impl Keystream {
         let core = CtrCore::<_, F>::inner_iv_init(&self.cipher, &{
@@ -208,16 +217,13 @@ where
     C: KeyInit,
 {
     #[inline]
-    fn new(key: &GenericArray<u8, Self::KeySize>) -> Self {
+    fn new(key: &Key<Self>) -> Self {
         Self::new(C::new(key))
     }
 }
 
 /// A wrapper around [`StreamCipherCore`] that implements
-/// [`Keystream`].
-///
-/// This likely provides better performance than using
-/// [`StreamCipher`] directly.
+/// [`Keystream`] for any block size.
 // The code is largely taken from
 // <https://github.com/RustCrypto/traits/blob/2b9e5f585a5fda5392ac81240ea5bfd9e2cc1790/cipher/src/stream/wrapper.rs>
 pub struct KeystreamWrapper<T: StreamCipherCore> {
@@ -228,6 +234,7 @@ pub struct KeystreamWrapper<T: StreamCipherCore> {
 
 impl<T: StreamCipherCore> KeystreamWrapper<T> {
     /// Crates a `KeystreamWrapper` from a [`StreamCipherCore`].
+    #[allow(clippy::indexing_slicing)]
     pub fn from_core(core: T) -> Self {
         let mut buffer = GenericArray::default();
         buffer[0] = T::BlockSize::U8;
@@ -237,6 +244,7 @@ impl<T: StreamCipherCore> KeystreamWrapper<T> {
 
 impl<T: StreamCipherCore> KeystreamWrapper<T> {
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     fn get_pos(&self) -> u8 {
         let pos = self.buffer[0];
         if pos == 0 || pos > T::BlockSize::U8 {
@@ -254,9 +262,11 @@ impl<T: StreamCipherCore> KeystreamWrapper<T> {
     /// than buffer size.
     ///
     /// # Safety
+    ///
     /// `pos` MUST be bigger than zero and smaller or equal to
     /// `T::BlockSize::USIZE`.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     unsafe fn set_pos_unchecked(&mut self, pos: usize) {
         debug_assert_ne!(pos, 0);
         debug_assert!(pos <= T::BlockSize::USIZE);
@@ -266,6 +276,7 @@ impl<T: StreamCipherCore> KeystreamWrapper<T> {
 
     /// Return number of remaining bytes in the internal buffer.
     #[inline]
+    #[allow(clippy::arithmetic_side_effects)]
     fn remaining(&self) -> u8 {
         // This never underflows because of the safety invariant.
         T::BlockSize::U8 - self.get_pos()
@@ -295,8 +306,16 @@ impl<T: StreamCipherCore> KeystreamWrapper<T> {
 
 impl<T: StreamCipherCore> Keystream for KeystreamWrapper<T> {
     #[inline]
-    fn next<const N: usize>(&mut self, buf: &mut [u8; N]) {
-        self.check_remaining(N).unwrap();
+    fn remaining_bytes(&self) -> Option<usize> {
+        let blocks = self.core.remaining_blocks()?;
+        let rem = usize::from(self.remaining());
+        blocks.checked_mul(T::BlockSize::USIZE)?.checked_add(rem)
+    }
+
+    #[inline]
+    #[allow(clippy::indexing_slicing)]
+    fn first(&mut self, buf: &mut [u8; 48]) {
+        debug_assert_eq!(self.check_remaining(buf.len()), Ok(()));
 
         let (blocks, tail) = as_chunks_mut::<T::BlockSize>(buf);
         self.core.write_keystream_blocks(blocks);
@@ -318,14 +337,15 @@ impl<T: StreamCipherCore> Keystream for KeystreamWrapper<T> {
     }
 
     #[inline]
-    fn try_apply(mut self, mut data: InOutBuf<'_, '_, u8>) -> Result<(), Error> {
-        self.check_remaining(data.len())?;
+    #[allow(clippy::arithmetic_side_effects)]
+    #[allow(clippy::indexing_slicing)]
+    fn apply(mut self, mut data: InOutBuf<'_, '_, u8>) {
+        debug_assert_eq!(self.check_remaining(data.len()), Ok(()));
 
         let pos = usize::from(self.get_pos());
         let rem = usize::from(self.remaining());
         let data_len = data.len();
 
-        //if rem != 0 && T::BlockSize::USIZE != 16 {
         if rem != 0 {
             if data_len <= rem {
                 data.xor_in2out(&self.buffer[pos..][..data_len]);
@@ -339,7 +359,7 @@ impl<T: StreamCipherCore> Keystream for KeystreamWrapper<T> {
                 unsafe {
                     self.set_pos_unchecked(pos + data_len);
                 }
-                return Ok(());
+                return;
             }
             let (mut left, right) = data.split_at(rem);
             data = right;
@@ -368,8 +388,6 @@ impl<T: StreamCipherCore> Keystream for KeystreamWrapper<T> {
         unsafe {
             self.set_pos_unchecked(new_pos);
         }
-
-        Ok(())
     }
 }
 
@@ -387,7 +405,6 @@ impl<T: KeyInit + StreamCipherCore> KeyInit for KeystreamWrapper<T> {
 #[cfg(feature = "zeroize")]
 #[cfg_attr(docsrs, doc(cfg(feature = "zeroize")))]
 impl<T: StreamCipherCore> Drop for KeystreamWrapper<T> {
-    #[inline]
     fn drop(&mut self) {
         // If present, `core` will be zeroized by its own `Drop`.
         self.buffer.zeroize();

@@ -8,16 +8,18 @@
 mod tests;
 
 pub use aead;
-use aead::{AeadCore, AeadInPlace, Key, KeyInit};
+use aead::{AeadCore, AeadInPlace, Key, KeyInit, KeySizeUser};
 use aes::{Aes128, Aes256};
-use cipher::crypto_common::InnerUser;
-use ctr::flavors::Ctr32BE;
-use gcm_sst::{rust_crypto::CtrGen, GcmSst};
+use cipher::{BlockCipher, BlockEncrypt, InnerIvInit, Iv};
+use ctr::{flavors::Ctr32BE, CtrCore};
 pub use gcm_sst::{
-    rust_crypto::NonceSize, Error, Nonce, Tag, MAX_TAG_SIZE, MIN_TAG_SIZE, NONCE_SIZE,
+    rust_crypto::NonceSize,
+    typenum::{generic_const_mappings::U, U16},
+    Error, Nonce, Tag, MAX_TAG_SIZE, MIN_TAG_SIZE, NONCE_SIZE,
 };
+use gcm_sst::{GcmSst, Generator, Keystream};
 
-type AesGcmSst<A, const T: usize> = GcmSst<CtrGen<A, Ctr32BE>, T>;
+type AesGcmSst<A, const T: usize> = GcmSst<CtrGen<A>, T>;
 
 macro_rules! aead_impl {
     (
@@ -60,7 +62,8 @@ macro_rules! aead_impl {
             /// Creates a new instance of AES-GCM-SST.
             #[inline]
             pub fn new(key: &[u8; $aes_bits / 8]) -> Self {
-                let generator = KeyInit::new(key.into());
+                let cipher = <$aes>::new(key.into());
+                let generator = CtrGen { cipher };
                 Self(GcmSst::new(generator))
             }
 
@@ -156,8 +159,8 @@ macro_rules! aead_impl {
             }
         }
 
-        impl InnerUser for $name {
-            type Inner = AesGcmSst<$aes, { Self::TAG_SIZE }>;
+        impl KeySizeUser for $name {
+            type KeySize = U<{ $aes_bits / 8 }>;
         }
 
         impl KeyInit for $name {
@@ -168,9 +171,9 @@ macro_rules! aead_impl {
         }
 
         impl AeadCore for $name {
-            type NonceSize = <<Self as InnerUser>::Inner as AeadCore>::NonceSize;
-            type TagSize = <<Self as InnerUser>::Inner as AeadCore>::TagSize;
-            type CiphertextOverhead = <<Self as InnerUser>::Inner as AeadCore>::CiphertextOverhead;
+            type NonceSize = NonceSize;
+            type TagSize = U<{ Self::TAG_SIZE }>;
+            type CiphertextOverhead = Self::TagSize;
         }
 
         impl AeadInPlace for $name {
@@ -216,4 +219,29 @@ aead_impl!(Aes256GcmSst14, Aes256, 1 << 19, 112, 256, "a fourteen");
 #[inline(always)]
 fn less_or_equal(x: usize, y: u64) -> bool {
     u64::try_from(x).is_ok_and(|n| n <= y)
+}
+
+/// A counter-mode [`Generator`].
+#[derive(Clone, Debug)]
+struct CtrGen<C> {
+    cipher: C,
+}
+
+impl<C> Generator for CtrGen<C>
+where
+    C: BlockEncrypt + BlockCipher<BlockSize = U16>,
+{
+    #[inline]
+    fn init(&self, nonce: &Nonce) -> impl Keystream {
+        let iv = {
+            let mut iv = Iv::<CtrCore<&C, Ctr32BE>>::default();
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "The compiler elides the bounds check"
+            )]
+            iv[..NONCE_SIZE].copy_from_slice(nonce);
+            iv
+        };
+        CtrCore::<_, Ctr32BE>::inner_iv_init(&self.cipher, &iv)
+    }
 }

@@ -15,7 +15,7 @@ categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
 
 [features]
 default = [
-	"zeroize",
+	#"zeroize",
 ]
 
 # Enable allocations.
