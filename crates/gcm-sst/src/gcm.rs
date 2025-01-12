@@ -1,7 +1,7 @@
 use core::{error, fmt, marker::PhantomData};
 
 use inout::InOutBuf;
-use polyhash::{Key as PolyKey, Lite, Polyval};
+use polyhash::{Key as PolyKey, Lite, Polyval, Precomputed};
 use subtle::ConstantTimeEq;
 use typenum::{
     generic_const_mappings::{Const, ToUInt, U},
@@ -29,7 +29,7 @@ pub trait Generator {
 /// A stream of pseudorandom bytes.
 pub trait Keystream: Sized {
     /// Reads the next `N` keystream bytes.
-    fn next<const N: usize>(&mut self, buf: &mut [u8; N]) -> Result<(), Error>;
+    fn next<const N: usize>(&mut self, buf: &mut [u8; N]);
     /// Applies the remainder of the keystream to `buf`.
     fn try_apply(self, buf: InOutBuf<'_, '_, u8>) -> Result<(), Error>;
 }
@@ -68,7 +68,7 @@ const C_MAX: u64 = u64::MAX / 8;
 const A_MAX: u64 = u64::MAX / 8;
 
 /// GCM-SST AEAD.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct GcmSst<G, const T: usize> {
     generator: G,
     _marker: PhantomData<G>,
@@ -214,7 +214,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn compute_tag(
         &self,
         h: &[u8; 16],
@@ -227,7 +226,7 @@ where
         //
         // Let X = POLYVAL(H, S[0], S[1], ..., S[m + n - 1])
         let x = {
-            let mut poly = Polyval::<Lite>::new(&PolyKey::new_unchecked(h));
+            let mut poly = Polyval::<Precomputed>::new(&PolyKey::new_unchecked(h));
             poly.update_padded(ad); // zeropad(A)
             poly.update_padded(ct); // zeropad(ct)
             poly.tag().into()
@@ -261,18 +260,6 @@ where
     }
 }
 
-impl<G, const T: usize> Clone for GcmSst<G, T>
-where
-    G: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            generator: self.generator.clone(),
-            _marker: PhantomData,
-        }
-    }
-}
-
 #[inline(always)]
 const fn xor(a: [u8; 16], b: [u8; 16]) -> [u8; 16] {
     // This appears to generate much better assembly than the
@@ -287,10 +274,10 @@ fn less_or_equal(x: usize, y: u64) -> bool {
     u64::try_from(x).is_ok_and(|n| n <= y)
 }
 
-//#[inline(always)]
+#[inline(always)]
 fn first_three_blocks<K: Keystream>(ks: &mut K) -> Result<([u8; 16], [u8; 16], [u8; 16]), Error> {
     let mut buf = [0; 16 * 3];
-    ks.next(&mut buf)?;
+    ks.next(&mut buf);
     let (h, rest) = buf.split_at(16);
     let (q, m) = rest.split_at(16);
     Ok((

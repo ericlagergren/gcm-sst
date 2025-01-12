@@ -26,7 +26,7 @@ alloc = [
 	"aead?/alloc",
 	"cipher?/alloc",
 	"ctr?/alloc",
-	"zeroize/alloc",
+	"zeroize?/alloc",
 ]
 
 # Enable Rust Crypto integration.
@@ -54,7 +54,7 @@ std = [
 	"ctr?/std",
 	"inout/std",
 	"polyhash/std",
-	"zeroize/std",
+	"zeroize?/std",
 ]
 
 zeroize = [
@@ -66,16 +66,16 @@ zeroize = [
 ]
 
 [dependencies]
-aead = { version = "0.5", default-features = false, optional = true }
-cipher = { version = "0.4", default-features = false, optional = true }
+aead = { workspace = true, default-features = false, optional = true }
+cipher = { workspace = true, default-features = false, optional = true }
 crypto-common = { version = "0.1" }
-ctr = { version = "0.9", default-features = false, optional = true }
+ctr = { workspace = true, default-features = false, optional = true }
 inout = { version = "0.1" }
 #polyhash = { version = "0.2" }
 polyhash = { path = "/Users/eric/git/polyval-rs" }
 subtle = { workspace = true }
 typenum = { workspace = true, default-features = false, features = ["const-generics"] }
-zeroize = { version = "1.8", default-features = false, optional = true }
+zeroize = { workspace = true, default-features = false, optional = true }
 
 # Used by the `testing` feature.
 hex = { version = "0.4", features = ["serde"], optional = true }
@@ -85,8 +85,8 @@ serde_json = { version = "1", optional = true }
 [dev-dependencies]
 gcm-sst = { path = ".", features = ["rust-crypto", "testing"] }
 
-aes = { version = "0.8" }
-ctr = { version = "0.9" }
+aes = { workspace = true  }
+ctr = { workspace = true }
 hex = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }

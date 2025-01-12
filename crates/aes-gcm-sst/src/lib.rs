@@ -7,12 +7,15 @@
 
 mod tests;
 
-pub use aead::{AeadCore, AeadInPlace, Key, KeyInit, KeySizeUser};
+pub use aead;
+use aead::{AeadCore, AeadInPlace, Key, KeyInit};
 use aes::{Aes128, Aes256};
-pub use cipher::crypto_common::InnerUser;
+use cipher::crypto_common::InnerUser;
 use ctr::flavors::Ctr32BE;
 use gcm_sst::{rust_crypto::CtrGen, GcmSst};
-pub use gcm_sst::{Error, Nonce, Tag, MAX_TAG_SIZE, MIN_TAG_SIZE, NONCE_SIZE};
+pub use gcm_sst::{
+    rust_crypto::NonceSize, Error, Nonce, Tag, MAX_TAG_SIZE, MIN_TAG_SIZE, NONCE_SIZE,
+};
 
 type AesGcmSst<A, const T: usize> = GcmSst<CtrGen<A, Ctr32BE>, T>;
 
@@ -213,14 +216,4 @@ aead_impl!(Aes256GcmSst14, Aes256, 1 << 19, 112, 256, "a fourteen");
 #[inline(always)]
 fn less_or_equal(x: usize, y: u64) -> bool {
     u64::try_from(x).is_ok_and(|n| n <= y)
-}
-
-pub fn xor(a: [u8; 16], b: [u8; 16]) -> [u8; 16] {
-    //(u128::from_le_bytes(a) ^ u128::from_le_bytes(b)).to_le_bytes()
-
-    let mut out = [0; 16];
-    for ((z, x), y) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
-        *z = x ^ y;
-    }
-    out
 }

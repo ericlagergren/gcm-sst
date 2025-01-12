@@ -43,9 +43,8 @@ impl From<aead::Error> for Error {
 
 impl<S: StreamCipher> Keystream for S {
     #[inline]
-    fn next<const N: usize>(&mut self, buf: &mut [u8; N]) -> Result<(), Error> {
-        self.try_apply(InOutBuf::from(&mut buf[..]))?;
-        Ok(())
+    fn next<const N: usize>(&mut self, buf: &mut [u8; N]) {
+        self.try_apply(InOutBuf::from(&mut buf[..])).unwrap();
     }
 
     #[inline]
@@ -296,11 +295,11 @@ impl<T: StreamCipherCore> KeystreamWrapper<T> {
 
 impl<T: StreamCipherCore> Keystream for KeystreamWrapper<T> {
     #[inline]
-    fn next<const N: usize>(&mut self, buf: &mut [u8; N]) -> Result<(), Error> {
-        self.check_remaining(N)?;
+    fn next<const N: usize>(&mut self, buf: &mut [u8; N]) {
+        self.check_remaining(N).unwrap();
 
-        let (head, tail) = as_chunks_mut::<T::BlockSize>(buf);
-        self.core.write_keystream_blocks(head);
+        let (blocks, tail) = as_chunks_mut::<T::BlockSize>(buf);
+        self.core.write_keystream_blocks(blocks);
 
         let new_pos = if tail.is_empty() {
             T::BlockSize::USIZE
@@ -316,8 +315,6 @@ impl<T: StreamCipherCore> Keystream for KeystreamWrapper<T> {
         unsafe {
             self.set_pos_unchecked(new_pos);
         }
-
-        Ok(())
     }
 
     #[inline]
@@ -328,6 +325,7 @@ impl<T: StreamCipherCore> Keystream for KeystreamWrapper<T> {
         let rem = usize::from(self.remaining());
         let data_len = data.len();
 
+        //if rem != 0 && T::BlockSize::USIZE != 16 {
         if rem != 0 {
             if data_len <= rem {
                 data.xor_in2out(&self.buffer[pos..][..data_len]);
@@ -363,7 +361,6 @@ impl<T: StreamCipherCore> Keystream for KeystreamWrapper<T> {
             tail.xor_in2out(&self.buffer[..tail.len()]);
             tail.len()
         };
-
         // SAFETY: `into_chunks` always returns tail with size
         // less than block size. If `tail.len()` is zero, we
         // replace it with block size. Thus the invariant
@@ -390,6 +387,7 @@ impl<T: KeyInit + StreamCipherCore> KeyInit for KeystreamWrapper<T> {
 #[cfg(feature = "zeroize")]
 #[cfg_attr(docsrs, doc(cfg(feature = "zeroize")))]
 impl<T: StreamCipherCore> Drop for KeystreamWrapper<T> {
+    #[inline]
     fn drop(&mut self) {
         // If present, `core` will be zeroized by its own `Drop`.
         self.buffer.zeroize();
@@ -402,8 +400,8 @@ impl<T: StreamCipherCore + ZeroizeOnDrop> ZeroizeOnDrop for KeystreamWrapper<T> 
 
 // See https://doc.rust-lang.org/std/primitive.slice.html#method.as_chunks_mut
 #[inline(always)]
+#[allow(clippy::arithmetic_side_effects)]
 fn as_chunks_mut<N: ArrayLength<u8>>(blocks: &mut [u8]) -> (&mut [GenericArray<u8, N>], &mut [u8]) {
-    #[allow(clippy::arithmetic_side_effects)]
     let len_rounded_down = (blocks.len() / N::USIZE) * N::USIZE;
     // SAFETY: The rounded-down value is always the same or
     // smaller than the original length, and thus must be
